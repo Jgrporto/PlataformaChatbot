@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Console de Comandos</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap");
+
+      :root {
+        --bg: #0b0d10;
+        --bg-accent: #1a2030;
+        --card: #121622;
+        --card-2: #0f1320;
+        --text: #e9ecf1;
+        --muted: #9aa3b2;
+        --accent: #f7b51c;
+        --accent-2: #3ad29f;
+        --danger: #ff6b6b;
+        --stroke: rgba(255, 255, 255, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Space Grotesk", sans-serif;
+        background:
+          radial-gradient(900px circle at 10% 10%, rgba(62, 88, 255, 0.18), transparent 40%),
+          radial-gradient(800px circle at 90% 20%, rgba(247, 181, 28, 0.12), transparent 45%),
+          linear-gradient(160deg, #0b0d10 0%, #0f1420 55%, #0b0d10 100%);
+        color: var(--text);
+      }
+
+      .shell {
+        max-width: 1100px;
+        margin: 40px auto;
+        padding: 24px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 24px;
+        margin-bottom: 28px;
+      }
+
+      .panel {
+        background: var(--card);
+        border: 1px solid var(--stroke);
+        border-radius: 18px;
+        padding: 22px;
+        box-shadow: 0 30px 60px rgba(0, 0, 0, 0.25);
+      }
+
+      .title {
+        font-size: 30px;
+        font-weight: 700;
+        margin: 0 0 8px;
+        letter-spacing: -0.02em;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        margin: 0;
+        line-height: 1.5;
+      }
+
+      .meta {
+        display: grid;
+        gap: 10px;
+        padding: 16px;
+        background: var(--card-2);
+        border-radius: 14px;
+        border: 1px solid var(--stroke);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(58, 210, 159, 0.18);
+        color: var(--accent-2);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        font-size: 12px;
+        margin-top: 12px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 22px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+      }
+
+      thead th {
+        text-align: left;
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        padding: 12px 10px;
+      }
+
+      tbody tr {
+        border-top: 1px solid var(--stroke);
+      }
+
+      tbody td {
+        padding: 14px 10px;
+        vertical-align: middle;
+      }
+
+      .token-input,
+      .flow-select {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #0b0f1c;
+        border: 1px solid transparent;
+        color: var(--text);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        transition: border 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .token-input:focus,
+      .flow-select:focus {
+        outline: none;
+        border-color: rgba(247, 181, 28, 0.5);
+        box-shadow: 0 0 0 3px rgba(247, 181, 28, 0.16);
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        border: none;
+        border-radius: 10px;
+        padding: 8px 14px;
+        font-weight: 600;
+        cursor: pointer;
+        background: var(--accent);
+        color: #18110a;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 16px rgba(247, 181, 28, 0.3);
+      }
+
+      button.secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--stroke);
+      }
+
+      button.danger {
+        background: rgba(255, 107, 107, 0.16);
+        color: var(--danger);
+        border: 1px solid rgba(255, 107, 107, 0.35);
+      }
+
+      .toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .footer {
+        margin-top: 24px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .toast {
+        margin-top: 10px;
+        font-size: 13px;
+        color: var(--accent);
+      }
+
+      @media (max-width: 900px) {
+        .hero {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <div class="panel">
+          <h1 class="title">Console de Comandos</h1>
+          <p class="subtitle">
+            Edite tokens e fluxos ativos sem reiniciar o processo. Mudancas sao
+            aplicadas em segundos.
+          </p>
+          <div class="status" id="status-pill">STATUS ONLINE</div>
+        </div>
+        <div class="panel meta">
+          <div>Ambiente: Railway</div>
+          <div>Porta: 3200</div>
+          <div>Auth: Basic (user/senha)</div>
+          <div>Escopo atual: comandos</div>
+        </div>
+      </section>
+
+      <section class="panel grid">
+        <div>
+          <h2 class="title" style="font-size: 22px; margin-bottom: 6px;">Comandos ativos</h2>
+          <p class="subtitle">Edite tokens e habilite ou desabilite fluxos.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Token</th>
+                <th>Fluxo</th>
+                <th>Ativo</th>
+                <th>Acoes</th>
+              </tr>
+            </thead>
+            <tbody id="commands-body"></tbody>
+          </table>
+        </div>
+        <div>
+          <h2 class="title" style="font-size: 22px; margin-bottom: 6px;">Novo comando</h2>
+          <p class="subtitle">Crie um novo token vinculado a um fluxo existente.</p>
+          <div class="actions" style="margin-top: 12px; align-items: center;">
+            <input id="new-token" class="token-input" placeholder="#NOVO" />
+            <select id="new-flow" class="flow-select"></select>
+            <label class="toggle">
+              <input id="new-enabled" type="checkbox" checked />
+              Ativo
+            </label>
+            <button id="create-command">Criar</button>
+          </div>
+          <div class="toast" id="toast"></div>
+        </div>
+      </section>
+
+      <div class="footer">Sessao unica, comandos compartilhados por todas as contas.</div>
+    </div>
+
+    <script>
+      const flows = ["IBO", "ASSIST", "LAZER", "FUN", "PLAYSIM"];
+      const body = document.getElementById("commands-body");
+      const toast = document.getElementById("toast");
+      const newFlow = document.getElementById("new-flow");
+      flows.forEach((flow) => {
+        const opt = document.createElement("option");
+        opt.value = flow;
+        opt.textContent = flow;
+        newFlow.appendChild(opt);
+      });
+
+      function showToast(message, isError = false) {
+        toast.textContent = message || "";
+        toast.style.color = isError ? "#ff6b6b" : "#f7b51c";
+      }
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, {
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          ...options
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || "Erro na API");
+        }
+        if (res.status === 204) return null;
+        return res.json();
+      }
+
+      function renderCommands(commands) {
+        body.innerHTML = "";
+        commands.forEach((cmd) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td><input class="token-input" value="${cmd.token}" data-id="${cmd.id}" data-field="token" /></td>
+            <td>
+              <select class="flow-select" data-id="${cmd.id}" data-field="flow">
+                ${flows.map((flow) => `<option value="${flow}" ${flow === cmd.flow ? "selected" : ""}>${flow}</option>`).join("")}
+              </select>
+            </td>
+            <td>
+              <label class="toggle">
+                <input type="checkbox" ${cmd.enabled ? "checked" : ""} data-id="${cmd.id}" data-field="enabled" />
+                ${cmd.enabled ? "On" : "Off"}
+              </label>
+            </td>
+            <td class="actions">
+              <button class="secondary" data-action="save" data-id="${cmd.id}">Salvar</button>
+              <button class="danger" data-action="delete" data-id="${cmd.id}">Excluir</button>
+            </td>
+          `;
+          body.appendChild(row);
+        });
+      }
+
+      async function loadCommands() {
+        const data = await api("/api/commands");
+        renderCommands(data);
+      }
+
+      document.getElementById("create-command").addEventListener("click", async () => {
+        const token = document.getElementById("new-token").value;
+        const flow = document.getElementById("new-flow").value;
+        const enabled = document.getElementById("new-enabled").checked;
+        try {
+          await api("/api/commands", {
+            method: "POST",
+            body: JSON.stringify({ token, flow, enabled })
+          });
+          showToast("Comando criado.");
+          document.getElementById("new-token").value = "";
+          await loadCommands();
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
+
+      body.addEventListener("click", async (ev) => {
+        const target = ev.target;
+        const action = target.getAttribute("data-action");
+        const id = target.getAttribute("data-id");
+        if (!action || !id) return;
+
+        if (action === "delete") {
+          if (!confirm("Excluir este comando?")) return;
+          try {
+            await api(`/api/commands/${id}`, { method: "DELETE" });
+            showToast("Comando removido.");
+            await loadCommands();
+          } catch (err) {
+            showToast(err.message, true);
+          }
+          return;
+        }
+
+        if (action === "save") {
+          const token = body.querySelector(`[data-id="${id}"][data-field="token"]`).value;
+          const flow = body.querySelector(`[data-id="${id}"][data-field="flow"]`).value;
+          const enabled = body.querySelector(`[data-id="${id}"][data-field="enabled"]`).checked;
+          try {
+            await api(`/api/commands/${id}`, {
+              method: "PUT",
+              body: JSON.stringify({ token, flow, enabled })
+            });
+            showToast("Comando atualizado.");
+            await loadCommands();
+          } catch (err) {
+            showToast(err.message, true);
+          }
+        }
+      });
+
+      loadCommands().catch((err) => showToast(err.message, true));
+    </script>
+  </body>
+</html>

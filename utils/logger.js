@@ -60,6 +60,7 @@ function formatMessageEvent({
   name,
   phoneE164,
   chatId,
+  sessionName,
   content,
   error
 }) {
@@ -74,6 +75,7 @@ function formatMessageEvent({
   if (name !== undefined) lines.push(`📛 Nome WhatsApp: ${safe(name, "<sem nome>")}`);
   if (phoneE164 !== undefined) lines.push(`📱 Telefone: ${safe(phoneE164, "<desconhecido>")}`);
   if (chatId !== undefined) lines.push(`🆔 Chat ID: ${safe(chatId, "<desconhecido>")}`);
+  if (sessionName !== undefined) lines.push(`Sessao: ${safe(sessionName, "<desconhecida>")}`);
   lines.push(...formatMessageContent(content));
 
   if (error) lines.push(...formatErrorBlock(error));
@@ -111,6 +113,7 @@ export function createLogger() {
           name: ctx?.name,
           phoneE164: ctx?.phoneE164,
           chatId: ctx?.chatId,
+          sessionName: ctx?.sessionName,
           content,
           error
         })
@@ -126,6 +129,7 @@ export function createLogger() {
           name: ctx?.name,
           phoneE164: ctx?.phoneE164,
           chatId: ctx?.chatId,
+          sessionName: ctx?.sessionName,
           content,
           error
         })
