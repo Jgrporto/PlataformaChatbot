@@ -27,14 +27,15 @@ async function writeJsonAtomic(filePath, data) {
 }
 
 export class FollowUpService {
-  constructor({ storagePath, delayMs, tickMs = DEFAULT_TICK_MS, logger }) {
+  constructor({ storagePath, delayMs, tickMs = DEFAULT_TICK_MS, logger, defaultSessionName = "" }) {
     this.storagePath = storagePath;
     this.delayMs = delayMs;
     this.tickMs = tickMs;
     this.logger = logger;
+    this.defaultSessionName = defaultSessionName;
     this.sendMessage = null;
 
-    this.byChatId = new Map(); // chatId -> record
+    this.byChatKey = new Map(); // sessionName|chatId -> record
     this.timer = null;
   }
 
@@ -48,7 +49,8 @@ export class FollowUpService {
 
     for (const rec of records) {
       if (!rec?.chatId || !rec?.createdAt) continue;
-      this.byChatId.set(rec.chatId, rec);
+      const normalized = this.normalizeRecord(rec);
+      this.byChatKey.set(this.buildKey(normalized), normalized);
     }
 
     await this.persist();
@@ -64,21 +66,22 @@ export class FollowUpService {
   }
 
   async persist() {
-    const records = Array.from(this.byChatId.values());
+    const records = Array.from(this.byChatKey.values());
     await writeJsonAtomic(this.storagePath, { records });
   }
 
-  schedule({ clientPhone, chatId, createdAt, clientName }) {
+  schedule({ clientPhone, chatId, createdAt, clientName, sessionName }) {
     const created = createdAt instanceof Date ? createdAt.toISOString() : createdAt;
     const rec = {
       id: randomUUID(),
       clientPhone: clientPhone || "",
       chatId,
       createdAt: created || new Date().toISOString(),
-      clientName: clientName || ""
+      clientName: clientName || "",
+      sessionName: sessionName || this.defaultSessionName || ""
     };
 
-    this.byChatId.set(chatId, rec);
+    this.byChatKey.set(this.buildKey(rec), rec);
     this.persist().catch((err) => this.logger?.error("[FollowUp] Persist falhou", err));
   }
 
@@ -91,7 +94,7 @@ export class FollowUpService {
     const now = Date.now();
     const due = [];
 
-    for (const rec of this.byChatId.values()) {
+    for (const rec of this.byChatKey.values()) {
       const createdMs = Date.parse(rec.createdAt);
       if (!Number.isFinite(createdMs)) continue;
       const dueAt = createdMs + this.delayMs;
@@ -107,11 +110,24 @@ export class FollowUpService {
     for (const rec of due) {
       try {
         await this.sendMessage(rec, this.buildMessage(rec));
-        this.byChatId.delete(rec.chatId);
+        this.byChatKey.delete(this.buildKey(rec));
         await this.persist();
       } catch (err) {
         this.logger?.error("[FollowUp] Falha ao enviar follow-up", err, { chatId: rec.chatId });
       }
     }
+  }
+
+  buildKey(rec) {
+    const sessionName = rec?.sessionName || this.defaultSessionName || "";
+    return `${sessionName}|${rec?.chatId || ""}`;
+  }
+
+  normalizeRecord(rec) {
+    if (rec?.sessionName) return rec;
+    return {
+      ...rec,
+      sessionName: this.defaultSessionName || ""
+    };
   }
 }

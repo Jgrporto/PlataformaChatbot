@@ -3,12 +3,23 @@ import qrcode from "qrcode-terminal";
 import axios from "axios";
 import Tesseract from "tesseract.js";
 import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
 import { criarUsuarioGerenciaAppComM3u } from "./gerenciaApp.js";
 import { logger } from "./utils/logger.js";
 import { normalizeToE164BR } from "./utils/phone.js";
 import { extractMacFromImageBuffer, extractMacFromText } from "./services/ocrService.js";
 import { criarTesteNewBR } from "./services/newbrService.js";
 import { FollowUpService } from "./services/followUpService.js";
+import {
+  initCommandStore,
+  getCommandIndex,
+  getCommands,
+  createCommand,
+  updateCommand,
+  deleteCommand,
+  getValidFlows
+} from "./services/commandService.js";
 
 const { Client, LocalAuth } = wweb;
 
@@ -17,13 +28,12 @@ const KEYWORD_ASSIST = "ASSIST PLUS";
 const KEYWORD_LAZER = "LAZER PLAY";
 const KEYWORD_FUN = "FUN PLAY";
 const KEYWORD_PLAYSIM = "PLAYSIM";
-const COMMANDS = {
-  ASSIST: "#ASSIST",
-  LAZER: "#LAZER",
-  IBO: "#IBO",
-  FUN: "#FUN",
-  PLAYSIM: "#PLAYSIM"
-};
+const SESSION_NAMES = (process.env.SESSION_NAMES || "Venda 1,Venda 2,Venda 3,Venda 4")
+  .split(",")
+  .map((name) => name.trim())
+  .filter(Boolean);
+const ADMIN_USER = process.env.ADMIN_USER || "";
+const ADMIN_PASS = process.env.ADMIN_PASS || "";
 const INSTRUCAO_TRIGGER = "VOCE VAI BAIXAR O APLICATIVO, INSTALAR E ABRIR";
 const INSTRUCAO_TRIGGER_2 = "ASSIM QUE ABRIR ME MANDA UM PRINT DO APLICATIVO ABERTO";
 const LAZER_INSTRUCAO_TRIGGER = "CHEGANDO NESSA TELA VOCE ME AVISA AQUI";
@@ -55,38 +65,138 @@ function isInstrucaoLazer(texto) {
     norm.includes(LAZER_INSTRUCAO_TRIGGER_PLAYLIST)
   );
 }
-const aguardandoMac = new Set(); // chatId (compat: permite cliente enviar #IBO com MAC digitado)
-const aguardandoMacAgente = new Map(); // chatId -> { phone, nome, fluxo }
-const fluxoCelular = new Map(); // chatId -> { stage: 'aguardando_prova', confirming: bool, mac?: string, printReminderSent?: bool }
-const fluxoLazer = new Map(); // chatId -> { stage: 'aguardando_foto' | 'aguardando_playlist_click' }
-let latestQr = "";
 const app = express();
-const QR_PORT = process.env.PORT || 3000;
+app.use(express.json({ limit: "200kb" }));
+const PORT = Number(process.env.PORT || 3200);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SELF_PING_URL = process.env.SELF_PING_URL || "";
 const IDLE_LOG_MS = Number(process.env.IDLE_LOG_MS || 300000); // 5 min
 const FOLLOWUP_MS = Number(process.env.FOLLOWUP_MS || 4 * 60 * 60 * 1000); // 4h padrao
 const FOLLOWUP_STORAGE_PATH = process.env.FOLLOWUP_STORAGE_PATH || "data/followups.json";
+const defaultSessionName = SESSION_NAMES[0] || "Venda 1";
 const followUpService = new FollowUpService({
   storagePath: FOLLOWUP_STORAGE_PATH,
   delayMs: FOLLOWUP_MS,
-  logger
+  logger,
+  defaultSessionName
 });
-followUpService.init().catch((err) => logger.error("[FollowUp] Falha ao iniciar serviço", err));
+followUpService.init().catch((err) => logger.error("[FollowUp] Falha ao iniciar servico", err));
+
+function requireAdminAuth(req, res, next) {
+  if (!ADMIN_USER || !ADMIN_PASS) {
+    return res.status(500).send("ADMIN_USER/ADMIN_PASS nao configurado.");
+  }
+  const header = req.headers.authorization || "";
+  if (!header.startsWith("Basic ")) {
+    res.setHeader("WWW-Authenticate", "Basic realm=\"Admin\"");
+    return res.status(401).send("Auth requerida.");
+  }
+  const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+  const [user, pass] = decoded.split(":");
+  if (user !== ADMIN_USER || pass !== ADMIN_PASS) {
+    res.setHeader("WWW-Authenticate", "Basic realm=\"Admin\"");
+    return res.status(401).send("Credenciais invalidas.");
+  }
+  return next();
+}
+
+function parseIdParam(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function handleCommandError(res, err) {
+  const message = err?.message || "Erro interno.";
+  if (message.includes("FLOW_INVALIDO") || message === "TOKEN_INVALIDO") {
+    return res.status(400).send(message);
+  }
+  if (message === "DB_INDISPONIVEL") {
+    return res.status(503).send("Banco indisponivel.");
+  }
+  if (message.toLowerCase().includes("duplicate") || message.toLowerCase().includes("unique")) {
+    return res.status(409).send("Token ja existe.");
+  }
+  return res.status(500).send(message);
+}
+
+app.get("/admin", requireAdminAuth, (_req, res) => {
+  res.sendFile(path.join(__dirname, "admin", "index.html"));
+});
+
+app.get("/api/commands", requireAdminAuth, async (_req, res) => {
+  try {
+    const commands = await getCommands({ includeDisabled: true });
+    res.json(commands);
+  } catch (err) {
+    handleCommandError(res, err);
+  }
+});
+
+app.get("/api/commands/flows", requireAdminAuth, (_req, res) => {
+  res.json(getValidFlows());
+});
+
+app.post("/api/commands", requireAdminAuth, async (req, res) => {
+  try {
+    const created = await createCommand(req.body || {});
+    res.status(201).json(created);
+  } catch (err) {
+    handleCommandError(res, err);
+  }
+});
+
+app.put("/api/commands/:id", requireAdminAuth, async (req, res) => {
+  const id = parseIdParam(req.params.id);
+  if (!id) return res.status(400).send("ID invalido.");
+  try {
+    const updated = await updateCommand(id, req.body || {});
+    if (!updated) return res.status(404).send("Comando nao encontrado.");
+    res.json(updated);
+  } catch (err) {
+    handleCommandError(res, err);
+  }
+});
+
+app.delete("/api/commands/:id", requireAdminAuth, async (req, res) => {
+  const id = parseIdParam(req.params.id);
+  if (!id) return res.status(400).send("ID invalido.");
+  try {
+    await deleteCommand(id);
+    res.status(204).end();
+  } catch (err) {
+    handleCommandError(res, err);
+  }
+});
+
+const AUTH_PATH = process.env.WWEB_AUTH_PATH || ".wwebjs_auth";
+
+function makeSessionKey(name) {
+  return (name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function createSessionState() {
+  return {
+    aguardandoMac: new Set(),
+    aguardandoMacAgente: new Map(),
+    fluxoCelular: new Map(),
+    fluxoLazer: new Map()
+  };
+}
 
 let lastActivity = Date.now();
 const touchActivity = () => {
   lastActivity = Date.now();
 };
 
-const botSentMessageIds = new Set();
-const botSentFingerprints = new Map(); // key -> expiresAtMs
-const agentProcessedMessageIds = new Set();
 
-function markBotSent(chatId, body) {
+function markBotSent(session, chatId, body) {
   if (!chatId) return;
   const text = (body || "").trim();
   const key = `${chatId}|${text}`;
-  botSentFingerprints.set(key, Date.now() + 15000);
+  session.botSentFingerprints.set(key, Date.now() + 15000);
 }
 
 function getSerializedMessageId(msg) {
@@ -114,21 +224,22 @@ function formatConteudoParaLog(msg) {
   return body || "<sem texto>";
 }
 
-async function replyBot(msg, phoneDigits, nome, texto) {
+async function replyBot(session, msg, phoneDigits, nome, texto) {
   const chatId = resolveChatIdConversa(msg) || "";
-  markBotSent(chatId, texto);
+  markBotSent(session, chatId, texto);
   const ctx = {
     contactType: resolveTipoContato(null, chatId),
     name: (nome || "").trim(),
     phoneE164: normalizeToE164BR(phoneDigits) || "",
     chatId,
-    origin: "BOT"
+    origin: "BOT",
+    sessionName: session?.name || ""
   };
 
   try {
     const sent = await msg.reply(texto);
     const id = sent?.id?._serialized;
-    if (id) botSentMessageIds.add(id);
+    if (id) session.botSentMessageIds.add(id);
     logger.messageSent(ctx, texto);
     return sent;
   } catch (err) {
@@ -137,7 +248,7 @@ async function replyBot(msg, phoneDigits, nome, texto) {
   }
 }
 
-async function processAgentMessage(msg) {
+async function processAgentMessage(session, msg) {
   const corpo = (msg?.body || "").trim();
   const corpoUpper = corpo.toUpperCase();
   const targetChatId = msg?.to || msg?.from || "";
@@ -146,7 +257,7 @@ async function processAgentMessage(msg) {
   const isGroup = !!chat?.isGroup || targetChatId.endsWith("@g.us");
 
   const targetContact = targetChatId
-    ? await client.getContactById(targetChatId).catch(() => null)
+    ? await session.client.getContactById(targetChatId).catch(() => null)
     : null;
 
   const phone = cleanPhone(targetContact?.number || targetChatId);
@@ -155,83 +266,91 @@ async function processAgentMessage(msg) {
   const phoneE164 = normalizeToE164BR(phone) || "";
   const contactType = resolveTipoContato(chat, targetChatId);
 
-  const ctx = { contactType, name: nome, phoneE164, chatId: targetChatId, origin: "AGENTE" };
+  const ctx = { contactType, name: nome, phoneE164, chatId: targetChatId, origin: "AGENTE", sessionName: session?.name || "" };
   const content = formatConteudoParaLog(msg);
 
   if (isGroup) return { ctx, content, errorForLog: null };
 
+  const state = session.state;
+
   if (isInstrucaoMensagem(corpo)) {
-    fluxoCelular.set(phone, { stage: "aguardando_prova", confirming: false, printReminderSent: false, mac: null });
+    state.fluxoCelular.set(phone, { stage: "aguardando_prova", confirming: false, printReminderSent: false, mac: null });
     logFluxoIdentificado("CELULAR/IBO", phone, nome);
   }
   if (isInstrucaoLazer(corpo)) {
-    await iniciarFluxoLazer(null, phone);
+    await iniciarFluxoLazer(session, null, phone);
     logger.info(`[LAZER] Instrucao detectada para ${phone}. Aguardando a foto do cliente para seguir com o teste.`);
   }
 
   const token = corpoUpper.startsWith("#") ? corpoUpper.split(/\s+/)[0] : "";
   let errorForLog = null;
 
-  if (token === COMMANDS.IBO) {
+  const commandIndex = token ? await getCommandIndex() : null;
+  const command = commandIndex ? commandIndex.activeByToken.get(token) : null;
+  if (token && !command) return { ctx, content, errorForLog };
+
+  if (command?.flow === "IBO") {
     // 1) #IBO com mídia enviada pelo próprio agente (lê o MAC direto da imagem)
     if (msg.hasMedia) {
       const leitura = await lerMacDaImagem(msg);
       if (leitura?.ok && leitura.mac) {
         logger.info(`[IBO] MAC detectado em midia do agente: ${leitura.mac}`);
-        await iniciarTesteIbo(leitura.mac, msg, phone, nomeNewBR);
+        await iniciarTesteIbo(session, leitura.mac, msg, phone, nomeNewBR);
       } else {
         if (leitura?.errorType) {
           errorForLog = { type: leitura.errorType, details: leitura.reason, err: leitura.err };
         }
         if (targetChatId) {
-          aguardandoMac.add(targetChatId);
-          aguardandoMacAgente.set(targetChatId, { phone, nome: nomeNewBR, fluxo: "IBO" });
+          state.aguardandoMac.add(targetChatId);
+          state.aguardandoMacAgente.set(targetChatId, { phone, nome: nomeNewBR, fluxo: "IBO" });
         }
         logFluxoIdentificado("IBO - MAC", phone, nomeNewBR);
-        await replyBot(msg, phone, nomeNewBR, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
+        await replyBot(session, msg, phone, nomeNewBR, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
       }
       return { ctx, content, errorForLog };
     }
 
     const macInline = extrairMacDeTexto(corpo);
     if (macInline) {
-      const pending = targetChatId ? aguardandoMacAgente.get(targetChatId) : null;
+      const pending = targetChatId ? state.aguardandoMacAgente.get(targetChatId) : null;
       if (targetChatId) {
-        aguardandoMac.delete(targetChatId);
-        aguardandoMacAgente.delete(targetChatId);
+        state.aguardandoMac.delete(targetChatId);
+        state.aguardandoMacAgente.delete(targetChatId);
       }
       if (pending?.fluxo === "CELULAR") {
-        await concluirFluxoCelular(msg, phone, nomeNewBR, macInline);
+        await concluirFluxoCelular(session, msg, phone, nomeNewBR, macInline);
       } else {
-        await iniciarTesteIbo(macInline, msg, phone, nomeNewBR);
+        await iniciarTesteIbo(session, macInline, msg, phone, nomeNewBR);
       }
       return { ctx, content, errorForLog };
     }
 
     // 2) #IBO marcando mensagem com imagem do cliente
-    const handled = await handleIboMensagemMarcada(msg, phone, nomeNewBR);
+    const handled = await handleIboMensagemMarcada(session, msg, phone, nomeNewBR);
     if (handled?.ocr?.errorType) {
-      errorForLog = { type: handled.ocr.errorType, details: handled.ocr.reason, err: handled.ocr.err };
+      const textLog = buildOcrTextLog(handled?.ocr?.extractedText || "");
+      const details = handled.ocr.reason + (textLog.text ? ` | texto: ${textLog.text}` : "");
+      errorForLog = { type: handled.ocr.errorType, details, err: handled.ocr.err };
     }
     if (handled?.handled) {
       return { ctx, content, errorForLog };
     } else {
       if (targetChatId) {
-        aguardandoMac.add(targetChatId);
-        aguardandoMacAgente.set(targetChatId, { phone, nome: nomeNewBR, fluxo: "IBO" });
+        state.aguardandoMac.add(targetChatId);
+        state.aguardandoMacAgente.set(targetChatId, { phone, nome: nomeNewBR, fluxo: "IBO" });
       }
       logFluxoIdentificado("IBO - MAC", phone, nomeNewBR);
-      await replyBot(msg, phone, nomeNewBR, "Marque a imagem com o MAC ou envie o MAC junto ao #IBO.");
+      await replyBot(session, msg, phone, nomeNewBR, "Marque a imagem com o MAC ou envie o MAC junto ao #IBO.");
       return { ctx, content, errorForLog };
     }
-  } else if (token === COMMANDS.ASSIST) {
-    await responderComTeste(msg, phone, nomeNewBR, APP_PROFILES.ASSIST);
-  } else if (token === COMMANDS.LAZER) {
-    await responderComTeste(msg, phone, nomeNewBR, APP_PROFILES.LAZER);
-  } else if (token === COMMANDS.FUN) {
-    await responderComTeste(msg, phone, nomeNewBR, APP_PROFILES.FUN);
-  } else if (token === COMMANDS.PLAYSIM) {
-    await responderComTeste(msg, phone, nomeNewBR, APP_PROFILES.PLAYSIM);
+  } else if (command?.flow === "ASSIST") {
+    await responderComTeste(session, msg, phone, nomeNewBR, APP_PROFILES.ASSIST);
+  } else if (command?.flow === "LAZER") {
+    await responderComTeste(session, msg, phone, nomeNewBR, APP_PROFILES.LAZER);
+  } else if (command?.flow === "FUN") {
+    await responderComTeste(session, msg, phone, nomeNewBR, APP_PROFILES.FUN);
+  } else if (command?.flow === "PLAYSIM") {
+    await responderComTeste(session, msg, phone, nomeNewBR, APP_PROFILES.PLAYSIM);
   }
 
   return { ctx, content, errorForLog };
@@ -276,12 +395,12 @@ function resolveAppName(appEscolhido = "") {
 }
 
 const APP_PROFILES = {
-  ASSIST: { keyword: KEYWORD_ASSIST, appName: "assist", display: "🟡 ASSIST PLUS", code: "centertv" },
-  LAZER: { keyword: KEYWORD_LAZER, appName: "lazer play", display: "🟡 LAZER PLAY", code: "br99" },
-  // FUN usa o mesmo bloco/credencial do LAZER, apenas troca o título exibido
-  FUN: { keyword: KEYWORD_LAZER, appName: "lazer play", display: "🟡 FUN PLAY", code: "br99" },
-  // PLAYSIM busca o bloco do ASSIST, mas exibe título PLAYSIM
-  PLAYSIM: { keyword: KEYWORD_ASSIST, appName: "playsim", display: "🟡 PLAYSIM", code: "centertv" }
+  ASSIST: { keyword: KEYWORD_ASSIST, appName: "assist", display: "\uD83D\uDFE1 ASSIST PLUS", code: "centertv", fallbackFullText: true },
+  LAZER: { keyword: KEYWORD_LAZER, appName: "lazer play", display: "\uD83D\uDFE1 LAZER PLAY", code: "br99" },
+  // FUN usa o mesmo bloco/credencial do LAZER, apenas troca o titulo exibido
+  FUN: { keyword: KEYWORD_LAZER, appName: "lazer play", display: "\uD83D\uDFE1 FUN PLAY", code: "br99" },
+  // PLAYSIM busca o bloco do ASSIST, mas exibe titulo PLAYSIM
+  PLAYSIM: { keyword: KEYWORD_ASSIST, appName: "playsim", display: "\uD83D\uDFE1 PLAYSIM", code: "centertv", fallbackFullText: true }
 };
 
 function nomeSeguro(nome, phone) {
@@ -398,14 +517,54 @@ async function lerTextoDaImagem(msg) {
   return { ok: !!texto.trim(), texto };
 }
 
+function buildOcrTextLog(extractedText) {
+  const cleaned = (extractedText || "").replace(/\s+/g, " ").trim();
+  const logFull = (process.env.OCR_LOG_FULL_TEXT || "0") === "1";
+  const text = logFull ? cleaned : cleaned.slice(0, 200);
+  return { text, textLen: cleaned.length, logFull };
+}
+
 async function lerMacDaImagem(msg) {
   if (!msg.hasMedia) return { ok: false, reason: "Mensagem nao possui midia" };
 
+  const msgId = msg?.id?._serialized || "";
+  const mime = msg?._data?.mimetype || msg?._data?.mimeType || "";
+  const downloadStart = Date.now();
+  logger.info(`[OCR] Download midia inicio (msgId=${msgId} mime=${mime || "n/a"})`);
   const media = await msg.downloadMedia();
-  if (!media?.data) return { ok: false, reason: "Falha ao baixar a midia" };
+  const downloadMs = Date.now() - downloadStart;
+
+  if (!media?.data) {
+    logger.warn(`[OCR] Download midia sem dados (msgId=${msgId} ms=${downloadMs})`);
+    return { ok: false, reason: "Falha ao baixar a midia" };
+  }
 
   const buffer = Buffer.from(media.data, "base64");
-  const result = await extractMacFromImageBuffer(buffer);
+  const bufferBytes = buffer.length;
+  logger.info(`[OCR] Download midia fim (msgId=${msgId} ms=${downloadMs} bytes=${bufferBytes})`);
+
+  const ocrStart = Date.now();
+  const slowMs = Number(process.env.OCR_SLOW_LOG_MS || 60000);
+  let slowTimer = null;
+  if (slowMs > 0) {
+    slowTimer = setTimeout(() => {
+      const elapsed = Date.now() - ocrStart;
+      logger.warn(`[OCR] OCR ainda em andamento (msgId=${msgId} ms=${elapsed})`);
+    }, slowMs);
+  }
+
+  let result;
+  try {
+    logger.info(`[OCR] OCR inicio (msgId=${msgId} bytes=${bufferBytes})`);
+    result = await extractMacFromImageBuffer(buffer);
+  } finally {
+    if (slowTimer) clearTimeout(slowTimer);
+  }
+
+  const ocrMs = Date.now() - ocrStart;
+  logger.info(
+    `[OCR] OCR fim (msgId=${msgId} ms=${ocrMs} ok=${result?.ok ? "1" : "0"} errorType=${result?.errorType || "n/a"} usedFallback=${result?.usedFallback ? "1" : "0"} rotateAuto=${result?.usedRotateAuto ? "1" : "0"})`
+  );
 
   if (result.ok) {
     return { ok: true, mac: result.mac, reason: "", errorType: null, extractedText: result.extractedText || "" };
@@ -420,6 +579,7 @@ async function lerMacDaImagem(msg) {
     err: result.err
   };
 }
+
 
 function resolveNomeNewBR(contact, phoneDigits = "") {
   const candidate =
@@ -489,45 +649,64 @@ function extrairCredenciais(bloco) {
   return { codigo, usuario, senha };
 }
 
-async function responderComTeste(msg, phone, nome, profile, mac) {
+function escapeRegex(value) {
+  return (value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function responderComTeste(session, msg, phone, nome, profile, mac) {
   const { keyword, appName, display, code: defaultCode } = profile;
   const reply = await gerarTesteSeguro(phone, nome, appName, mac);
   if (!reply) {
-    await replyBot(msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
+    await replyBot(session, msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
     return;
   }
 
   if (detectouLimite(reply)) {
-    await replyBot(msg, phone, nome, MSG_TESTE_ATIVO);
+    await replyBot(session, msg, phone, nome, MSG_TESTE_ATIVO);
     return;
   }
+
+  const commandIndex = await getCommandIndex();
+  const commandTokens = commandIndex.tokensAll || [];
 
   let filtrado = filtrarBloco(reply, keyword);
 
   if (!filtrado) {
-    await replyBot(msg, phone, nome, `Nao encontrei conteudo para ${keyword}.`);
+    if (profile?.fallbackFullText && reply) {
+      const credFallback = extrairCredenciais(reply);
+      const codigoFallback = defaultCode || credFallback.codigo;
+      if (credFallback.usuario || credFallback.senha || codigoFallback) {
+        const partes = [display, ""];
+        if (codigoFallback) partes.push(`\u2705   Cod: ${codigoFallback}`);
+        if (credFallback.usuario) partes.push(`\u2705  *Usu\u00e1rio:* ${credFallback.usuario}`);
+        if (credFallback.senha) partes.push(`\u2705  *Senha:* ${credFallback.senha}`);
+        await replyBot(session, msg, phone, nome, partes.join("\n"));
+        return;
+      }
+    }
+    await replyBot(session, msg, phone, nome, `Nao encontrei conteudo para ${keyword}.`);
     return;
   }
 
   // Remove palavras-chave e comandos antes de enviar ao cliente
   const keywordRegex = new RegExp(keyword, "gi");
-  const comandosRegex = new RegExp(
-    `${COMMANDS.LAZER}|${COMMANDS.ASSIST}|${COMMANDS.FUN}|${COMMANDS.PLAYSIM}`,
-    "gi"
-  );
-  filtrado = filtrado.replace(keywordRegex, "").replace(comandosRegex, "").trim();
+  const tokenPattern = commandTokens.filter(Boolean).map(escapeRegex).join("|");
+  const comandosRegex = tokenPattern ? new RegExp(tokenPattern, "gi") : null;
+  filtrado = filtrado.replace(keywordRegex, "");
+  if (comandosRegex) filtrado = filtrado.replace(comandosRegex, "");
+  filtrado = filtrado.trim();
 
   const cred = extrairCredenciais(filtrado);
-  const codigoFinal = cred.codigo || defaultCode;
+  const codigoFinal = defaultCode || cred.codigo;
 
   if (cred.usuario || cred.senha || codigoFinal) {
     const partes = [display, ""];
-    if (codigoFinal) partes.push(`✅   Cod: ${codigoFinal}`);
-    if (cred.usuario) partes.push(`✅  *Usuário:* ${cred.usuario}`);
-    if (cred.senha) partes.push(`✅  *Senha:* ${cred.senha}`);
-    await replyBot(msg, phone, nome, partes.join("\n"));
+    if (codigoFinal) partes.push(`\u2705   Cod: ${codigoFinal}`);
+    if (cred.usuario) partes.push(`\u2705  *Usu\u00e1rio:* ${cred.usuario}`);
+    if (cred.senha) partes.push(`\u2705  *Senha:* ${cred.senha}`);
+    await replyBot(session, msg, phone, nome, partes.join("\n"));
   } else {
-    await replyBot(msg, phone, nome, filtrado);
+    await replyBot(session, msg, phone, nome, filtrado);
   }
 
   const chatId = resolveChatIdConversa(msg);
@@ -537,32 +716,33 @@ async function responderComTeste(msg, phone, nome, profile, mac) {
       clientPhone: phoneE164,
       chatId,
       createdAt: new Date().toISOString(),
-      clientName: nome
+      clientName: nome,
+      sessionName: session?.name || ""
     });
   }
 }
 
-async function iniciarTesteIbo(mac, msg, phone, nome) {
+async function iniciarTesteIbo(session, mac, msg, phone, nome) {
   const macSanitized = (mac || "").trim();
   if (!macSanitized) {
-    await replyBot(msg, phone, nome, "MAC nao identificado. Envie a imagem com o MAC visivel, por favor.");
+    await replyBot(session, msg, phone, nome, "MAC nao identificado. Envie a imagem com o MAC visivel, por favor.");
     return;
   }
 
   const reply = await gerarTesteSeguro(phone, nome, "IBO REVENDA", macSanitized);
   if (!reply) {
-    await replyBot(msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
+    await replyBot(session, msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
     return;
   }
   if (detectouLimite(reply)) {
-    fluxoCelular.delete(phone);
-    await replyBot(msg, phone, nome, MSG_TESTE_ATIVO);
+    session.state.fluxoCelular.delete(phone);
+    await replyBot(session, msg, phone, nome, MSG_TESTE_ATIVO);
     return;
   }
 
   const m3u = extrairM3u(reply);
   if (!m3u) {
-    await replyBot(msg, phone, nome, "Nao consegui extrair o link M3U do teste.");
+    await replyBot(session, msg, phone, nome, "Nao consegui extrair o link M3U do teste.");
     return;
   }
 
@@ -582,11 +762,11 @@ async function iniciarTesteIbo(mac, msg, phone, nome) {
     });
   } catch (err) {
     logger.error("[IBO] Falha ao cadastrar no GerenciaApp", err);
-    await replyBot(msg, phone, nome, "Falha ao salvar no GerenciaApp, tente novamente mais tarde.");
+    await replyBot(session, msg, phone, nome, "Falha ao salvar no GerenciaApp, tente novamente mais tarde.");
     return;
   }
 
-  await replyBot(msg, phone, nome, MSG_TESTE_IBO_OK);
+  await replyBot(session, msg, phone, nome, MSG_TESTE_IBO_OK);
   const chatId = resolveChatIdConversa(msg);
   const phoneE164 = normalizeToE164BR(phone);
   if (chatId && phoneE164) {
@@ -594,34 +774,36 @@ async function iniciarTesteIbo(mac, msg, phone, nome) {
       clientPhone: phoneE164,
       chatId,
       createdAt: new Date().toISOString(),
-      clientName: nome
+      clientName: nome,
+      sessionName: session?.name || ""
     });
   }
 }
 
-async function handleIboImagem(msg, phone, nome) {
+async function handleIboImagem(session, msg, phone, nome) {
   const chatId = msg?.from || "";
+  const state = session.state;
   const leitura = await lerMacDaImagem(msg);
 
   if (!leitura.ok || !leitura.mac) {
     if (chatId) {
-      aguardandoMac.add(chatId);
-      aguardandoMacAgente.set(chatId, { phone, nome, fluxo: "IBO" });
+      state.aguardandoMac.add(chatId);
+      state.aguardandoMacAgente.set(chatId, { phone, nome, fluxo: "IBO" });
     }
     logFluxoIdentificado("IBO - MAC", phone, nome);
-    await replyBot(msg, phone, nome, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
+    await replyBot(session, msg, phone, nome, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
     return { ok: false, ocr: leitura };
   }
 
   if (chatId) {
-    aguardandoMac.delete(chatId);
-    aguardandoMacAgente.delete(chatId);
+    state.aguardandoMac.delete(chatId);
+    state.aguardandoMacAgente.delete(chatId);
   }
-  await iniciarTesteIbo(leitura.mac, msg, phone, nome);
+  await iniciarTesteIbo(session, leitura.mac, msg, phone, nome);
   return { ok: true, mac: leitura.mac };
 }
 
-async function handleIboMensagemMarcada(msg, phone, nome) {
+async function handleIboMensagemMarcada(session, msg, phone, nome) {
   let quoted = await msg.getQuotedMessage().catch((err) => {
     if (msg?.hasQuotedMsg) {
       logger.error("[IBO] Falha ao obter quotedMsg", err);
@@ -638,17 +820,19 @@ async function handleIboMensagemMarcada(msg, phone, nome) {
       msg?._data?.quotedMessage?._serialized ||
       null;
     if (qid) {
-      quoted = await client.getMessageById(qid).catch(() => null);
+      quoted = await session.client.getMessageById(qid).catch(() => null);
     }
   }
 
   if (!quoted) return { handled: false, ocr: null };
 
+  const state = session.state;
   logger.info(`[IBO] Processando imagem marcada por agente (quotedId=${quoted.id?._serialized || "n/a"})`);
 
   if (!quoted.hasMedia) {
     logger.warn(`[IBO] QuotedMsg sem media para ${phone} (quotedId=${quoted.id?._serialized || "n/a"})`);
     await replyBot(
+      session,
       msg,
       phone,
       nome,
@@ -658,50 +842,46 @@ async function handleIboMensagemMarcada(msg, phone, nome) {
   }
 
   let leitura = null;
-  const OCR_MARK_TIMEOUT_MS = Number(process.env.OCR_MARK_TIMEOUT_MS || 15000);
-  let ocrTimeoutId = null;
   try {
     logger.info("[IBO] Iniciando OCR da imagem marcada (agente)");
-    const timeoutPromise = new Promise((_, reject) => {
-      ocrTimeoutId = setTimeout(
-        () => reject(new Error(`Timeout OCR imagem marcada apos ${OCR_MARK_TIMEOUT_MS}ms`)),
-        OCR_MARK_TIMEOUT_MS
-      );
-    });
-    leitura = await Promise.race([lerMacDaImagem(quoted), timeoutPromise]);
+    leitura = await lerMacDaImagem(quoted);
   } catch (err) {
     logger.error("[IBO] Falha ao ler MAC da imagem marcada", err);
     return {
       handled: true,
       ocr: { ok: false, errorType: "OCR_ERROR", reason: err?.message || "Erro ao ler imagem marcada", err }
     };
-  } finally {
-    if (ocrTimeoutId) clearTimeout(ocrTimeoutId);
   }
+
   if (!leitura.ok || !leitura.mac) {
     const chatId = msg?.from || msg?.to || "";
     if (chatId) {
-      aguardandoMac.add(chatId);
-      aguardandoMacAgente.set(chatId, { phone, nome, fluxo: "IBO" });
+      state.aguardandoMac.add(chatId);
+      state.aguardandoMacAgente.set(chatId, { phone, nome, fluxo: "IBO" });
     }
+    const textLog = buildOcrTextLog(leitura.extractedText);
     logger.warn("[IBO] OCR nao encontrou MAC na imagem marcada pelo agente", {
       phone,
       nome,
-      reason: leitura.reason || "sem motivo"
+      reason: leitura.reason || "sem motivo",
+      textExtracted: textLog.text,
+      textLen: textLog.textLen,
+      textFull: textLog.logFull ? "1" : "0"
     });
-    await replyBot(msg, phone, nome, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
+    await replyBot(session, msg, phone, nome, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
     return { handled: true, ocr: leitura };
   }
 
   const chatId = msg?.from || msg?.to || "";
   if (chatId) {
-    aguardandoMac.delete(chatId);
-    aguardandoMacAgente.delete(chatId);
+    state.aguardandoMac.delete(chatId);
+    state.aguardandoMacAgente.delete(chatId);
   }
   logger.info(`[IBO] MAC detectado via imagem marcada pelo agente: ${leitura.mac}`);
-  await iniciarTesteIbo(leitura.mac, msg, phone, nome);
+  await iniciarTesteIbo(session, leitura.mac, msg, phone, nome);
   return { handled: true, ocr: null };
 }
+
 
 function textoSim(textoLower) {
   return ["sim", "s", "yes", "yep", "isso", "pode", "ok", "okay"].some((k) => {
@@ -725,37 +905,37 @@ function textoConfirmacaoLazer(textoLower) {
   });
 }
 
-async function concluirFluxoCelular(msg, phone, nome, macFromMedia) {
-  const estado = fluxoCelular.get(phone) || {};
+async function concluirFluxoCelular(session, msg, phone, nome, macFromMedia) {
+  const estado = session.state.fluxoCelular.get(phone) || {};
   const mac = macFromMedia || estado.mac;
 
   if (!mac) {
-    fluxoCelular.set(phone, {
+    session.state.fluxoCelular.set(phone, {
       ...estado,
       mac: null,
       stage: "aguardando_prova",
       confirming: false,
       printReminderSent: true
     });
-    await replyBot(msg, phone, nome, "Preciso de uma foto com o MAC visivel para liberar. Envie a imagem do app aberto, por favor.");
+    await replyBot(session, msg, phone, nome, "Preciso de uma foto com o MAC visivel para liberar. Envie a imagem do app aberto, por favor.");
     return;
   }
 
   const reply = await gerarTesteSeguro(phone, nome, "CELULAR");
   if (!reply) {
-    await replyBot(msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
+    await replyBot(session, msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
     return;
   }
   if (detectouLimite(reply)) {
-    fluxoCelular.delete(phone);
-    await replyBot(msg, phone, nome, MSG_TESTE_ATIVO);
+    session.state.fluxoCelular.delete(phone);
+    await replyBot(session, msg, phone, nome, MSG_TESTE_ATIVO);
     return;
   }
 
   const m3u = extrairM3u(reply);
   if (!m3u) {
     logger.warn("[CELULAR] Nao foi possivel extrair M3U do teste para cadastro.");
-    await replyBot(msg, phone, nome, "Seu teste foi gerado! Fecha o app e abre novamente.");
+    await replyBot(session, msg, phone, nome, "Seu teste foi gerado! Fecha o app e abre novamente.");
 
     const chatId = resolveChatIdConversa(msg);
     const phoneE164 = normalizeToE164BR(phone);
@@ -764,7 +944,8 @@ async function concluirFluxoCelular(msg, phone, nome, macFromMedia) {
         clientPhone: phoneE164,
         chatId,
         createdAt: new Date().toISOString(),
-        clientName: nome
+        clientName: nome,
+        sessionName: session?.name || ""
       });
     }
     return;
@@ -788,10 +969,10 @@ async function concluirFluxoCelular(msg, phone, nome, macFromMedia) {
   } catch (err) {
     logger.error("[CELULAR] Falha ao cadastrar no GerenciaApp", err);
   } finally {
-    fluxoCelular.delete(phone);
+    session.state.fluxoCelular.delete(phone);
   }
 
-  await replyBot(msg, phone, nome, "Seu teste foi gerado! Fecha o app e abre novamente.");
+  await replyBot(session, msg, phone, nome, "Seu teste foi gerado! Fecha o app e abre novamente.");
   const chatId = resolveChatIdConversa(msg);
   const phoneE164 = normalizeToE164BR(phone);
   if (chatId && phoneE164) {
@@ -799,27 +980,28 @@ async function concluirFluxoCelular(msg, phone, nome, macFromMedia) {
       clientPhone: phoneE164,
       chatId,
       createdAt: new Date().toISOString(),
-      clientName: nome
+      clientName: nome,
+      sessionName: session?.name || ""
     });
   }
 }
 
-async function handleFluxoCelular(msg, phone, nome, textoLower) {
-  const estado = fluxoCelular.get(phone);
+async function handleFluxoCelular(session, msg, phone, nome, textoLower) {
+  const estado = session.state.fluxoCelular.get(phone);
 
   if (!estado) return false;
 
   if (estado?.confirming) {
     if (textoSim(textoLower)) {
-      fluxoCelular.set(phone, { ...estado, confirming: false });
+      session.state.fluxoCelular.set(phone, { ...estado, confirming: false });
       if (estado.stage === "aguardando_prova") {
-        await replyBot(msg, phone, nome, MSG_PEDIR_PRINT);
+        await replyBot(session, msg, phone, nome, MSG_PEDIR_PRINT);
       }
       return true;
     }
     if (textoNao(textoLower)) {
-      fluxoCelular.delete(phone);
-      await replyBot(msg, phone, nome, "Um atendente vai responder em instantes. Obrigado!");
+      session.state.fluxoCelular.delete(phone);
+      await replyBot(session, msg, phone, nome, "Um atendente vai responder em instantes. Obrigado!");
       return true;
     }
     return false;
@@ -827,8 +1009,8 @@ async function handleFluxoCelular(msg, phone, nome, textoLower) {
 
   if (estado.stage === "aguardando_prova") {
     if (!estado.printReminderSent) {
-      fluxoCelular.set(phone, { ...estado, printReminderSent: true });
-      await replyBot(msg, phone, nome, MSG_PEDIR_PRINT);
+      session.state.fluxoCelular.set(phone, { ...estado, printReminderSent: true });
+      await replyBot(session, msg, phone, nome, MSG_PEDIR_PRINT);
     }
     return true;
   }
@@ -836,10 +1018,10 @@ async function handleFluxoCelular(msg, phone, nome, textoLower) {
   return false;
 }
 
-async function handleFluxoLazerImagem(msg, phone, nome) {
+async function handleFluxoLazerImagem(session, msg, phone, nome) {
   const leitura = await lerTextoDaImagem(msg);
   if (!leitura.ok) {
-    await replyBot(msg, phone, nome, "Nao consegui ler a imagem. Envie uma foto mais nitida da tela da TV, por favor.");
+    await replyBot(session, msg, phone, nome, "Nao consegui ler a imagem. Envie uma foto mais nitida da tela da TV, por favor.");
     return true;
   }
 
@@ -849,55 +1031,55 @@ async function handleFluxoLazerImagem(msg, phone, nome) {
   const hasCodigo = textoUpper.includes("CODIGO") || textoUpper.includes("CODE");
 
   if ((hasPlaylist || hasLista) && !hasCodigo) {
-    fluxoLazer.set(phone, { stage: "aguardando_playlist_click" });
-    await replyBot(msg, phone, nome, "Aperta na opcao Playlist/Lista e me envia a tela seguinte para liberar o teste.");
+    session.state.fluxoLazer.set(phone, { stage: "aguardando_playlist_click" });
+    await replyBot(session, msg, phone, nome, "Aperta na opcao Playlist/Lista e me envia a tela seguinte para liberar o teste.");
     return true;
   }
 
   if ((hasPlaylist || hasLista) && hasCodigo) {
-    fluxoLazer.delete(phone);
-    await replyBot(msg, phone, nome, "Gerando o teste. Use o codigo enviado para preencher no app.");
-    await responderComTeste(msg, phone, nome, APP_PROFILES.LAZER);
+    session.state.fluxoLazer.delete(phone);
+    await replyBot(session, msg, phone, nome, "Gerando o teste. Use o codigo enviado para preencher no app.");
+    await responderComTeste(session, msg, phone, nome, APP_PROFILES.LAZER);
     return true;
   }
 
   if (hasCodigo) {
-    fluxoLazer.delete(phone);
-    await responderComTeste(msg, phone, nome, APP_PROFILES.LAZER);
+    session.state.fluxoLazer.delete(phone);
+    await responderComTeste(session, msg, phone, nome, APP_PROFILES.LAZER);
     return true;
   }
 
-  await replyBot(msg, phone, nome, "Preciso da tela do app (menu ou tela de adicionar lista). Envie uma foto nA-tida, por favor.");
+  await replyBot(session, msg, phone, nome, "Preciso da tela do app (menu ou tela de adicionar lista). Envie uma foto nA-tida, por favor.");
   return true;
 }
 
-async function handleFluxoLazerMensagem(msg, phone, textoLower) {
-  const estado = fluxoLazer.get(phone);
+async function handleFluxoLazerMensagem(session, msg, phone, textoLower) {
+  const estado = session.state.fluxoLazer.get(phone);
   if (!estado) return false;
 
   if (estado.stage === "aguardando_playlist_click") {
-    await replyBot(msg, phone, "", "Clica na opcao Playlist e me envia a tela seguinte, por favor.");
+    await replyBot(session, msg, phone, "", "Clica na opcao Playlist e me envia a tela seguinte, por favor.");
     return true;
   }
 
   if (textoConfirmacaoLazer(textoLower)) {
-    await replyBot(msg, phone, "", "Beleza! Me envia uma foto da tela da TV para seguirmos o fluxo.");
+    await replyBot(session, msg, phone, "", "Beleza! Me envia uma foto da tela da TV para seguirmos o fluxo.");
   } else {
-    await replyBot(msg, phone, "", "So um momento que ja te respondo, por favor.");
+    await replyBot(session, msg, phone, "", "So um momento que ja te respondo, por favor.");
   }
 
   return true;
 }
 
-async function iniciarFluxoLazer(msg, phone) {
-  fluxoLazer.set(phone, { stage: "aguardando_foto" });
+async function iniciarFluxoLazer(session, msg, phone) {
+  session.state.fluxoLazer.set(phone, { stage: "aguardando_foto" });
   logFluxoIdentificado("LAZER", phone, (msg && resolveNome(await msg.getContact().catch(() => null), await msg.getChat().catch(() => null), phone)) || phone);
   if (msg) {
-    await replyBot(msg, phone, "", "Vamos seguir. Envie uma foto da tela da TV do app para continuar.");
+    await replyBot(session, msg, phone, "", "Vamos seguir. Envie uma foto da tela da TV do app para continuar.");
   }
 }
 
-async function processMessage(msg) {
+async function processMessage(session, msg) {
   const contact = await msg.getContact().catch(() => null);
   const chat = await msg.getChat().catch(() => null);
   const chatId = msg?.from || "";
@@ -910,42 +1092,46 @@ async function processMessage(msg) {
   const phoneE164 = normalizeToE164BR(phone) || "";
 
   let errorForLog = null;
-  const finish = () => ({ ctx: { contactType, name: nome, phoneE164, chatId, origin: "CLIENTE" }, errorForLog });
+  const finish = () => ({
+    ctx: { contactType, name: nome, phoneE164, chatId, origin: "CLIENTE", sessionName: session?.name || "" },
+    errorForLog
+  });
 
   if (contactType === "GRUPO") return finish();
 
-  const estadoLazer = fluxoLazer.get(phone);
+  const state = session.state;
+  const estadoLazer = state.fluxoLazer.get(phone);
 
   if (msg.hasMedia) {
     if (estadoLazer) {
-      await handleFluxoLazerImagem(msg, phone, nome);
+      await handleFluxoLazerImagem(session, msg, phone, nome);
       return finish();
     }
 
-    if (chatId && aguardandoMac.has(chatId)) {
-      const res = await handleIboImagem(msg, phone, nomeNewBR);
+    if (chatId && state.aguardandoMac.has(chatId)) {
+      const res = await handleIboImagem(session, msg, phone, nomeNewBR);
       if (res?.ocr?.errorType) {
         errorForLog = { type: res.ocr.errorType, details: res.ocr.reason, err: res.ocr.err };
       }
       return finish();
     }
 
-    const estadoCelular = fluxoCelular.get(phone);
+    const estadoCelular = state.fluxoCelular.get(phone);
     if (estadoCelular?.stage === "aguardando_prova") {
       const leitura = await lerMacDaImagem(msg);
       if (leitura.ok && leitura.mac) {
-        fluxoCelular.set(phone, { ...estadoCelular, mac: leitura.mac, confirming: false, printReminderSent: true });
-        await concluirFluxoCelular(msg, phone, nomeNewBR, leitura.mac);
+        state.fluxoCelular.set(phone, { ...estadoCelular, mac: leitura.mac, confirming: false, printReminderSent: true });
+        await concluirFluxoCelular(session, msg, phone, nomeNewBR, leitura.mac);
       } else {
         if (leitura?.errorType) {
           errorForLog = { type: leitura.errorType, details: leitura.reason, err: leitura.err };
         }
-        fluxoCelular.delete(phone);
+        state.fluxoCelular.delete(phone);
         if (chatId) {
-          aguardandoMac.add(chatId);
-          aguardandoMacAgente.set(chatId, { phone, nome: nomeNewBR, fluxo: "CELULAR" });
+          state.aguardandoMac.add(chatId);
+          state.aguardandoMacAgente.set(chatId, { phone, nome: nomeNewBR, fluxo: "CELULAR" });
         }
-        await replyBot(msg, phone, nomeNewBR, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
+        await replyBot(session, msg, phone, nomeNewBR, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
       }
       return finish();
     }
@@ -959,174 +1145,215 @@ async function processMessage(msg) {
   if (token) return finish();
 
   if (estadoLazer) {
-    const handledLazer = await handleFluxoLazerMensagem(msg, phone, textoLower);
+    const handledLazer = await handleFluxoLazerMensagem(session, msg, phone, textoLower);
     if (handledLazer) return finish();
   }
 
-  const handledFluxoCelular = await handleFluxoCelular(msg, phone, nome, textoLower);
+  const handledFluxoCelular = await handleFluxoCelular(session, msg, phone, nome, textoLower);
   if (handledFluxoCelular) return finish();
 
   return finish();
 }
 
-const AUTH_PATH = process.env.WWEB_AUTH_PATH || ".wwebjs_auth";
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
-  puppeteer: {
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
-  }
-});
+await initCommandStore(logger);
 
-client.on("qr", (qr) => {
-  touchActivity();
-  latestQr = qr;
-  const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qr)}`;
-  logger.info("QR Code gerado. Abra o link abaixo para escanear em qualquer dispositivo (copie e cole no navegador):");
-  logger.info(qrImgUrl);
-  logger.info(`Opcional (se tiver acesso local): http://localhost:${QR_PORT}/qr`);
-  qrcode.generate(qr, { small: true });
-});
-
-client.on("ready", () => {
-  touchActivity();
-  logger.info("Cliente WhatsApp conectado e pronto para receber mensagens.");
-  followUpService.setSender(async (rec, message) => {
-    const ctx = {
-      contactType: "CONTATO",
-      name: (rec?.clientName || "").trim(),
-      phoneE164: (rec?.clientPhone || "").trim(),
-      chatId: rec?.chatId || "",
-      origin: "BOT"
-    };
-
-    markBotSent(rec.chatId, message);
-    const sent = await client.sendMessage(rec.chatId, message);
-    const id = sent?.id?._serialized;
-    if (id) botSentMessageIds.add(id);
-    logger.messageSent(ctx, message);
-    return sent;
+function createSession(name, index) {
+  const safeName = (name || "").trim() || `Venda ${index + 1}`;
+  const key = makeSessionKey(safeName) || `venda_${index + 1}`;
+  const client = new Client({
+    authStrategy: new LocalAuth({ dataPath: AUTH_PATH, clientId: key }),
+    puppeteer: {
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    }
   });
-  followUpService.tick().catch((err) => logger.error("[FollowUp] Tick inicial falhou", err));
+
+  return {
+    name: safeName,
+    key,
+    client,
+    latestQr: "",
+    ready: false,
+    state: createSessionState(),
+    botSentMessageIds: new Set(),
+    botSentFingerprints: new Map(),
+    agentProcessedMessageIds: new Set()
+  };
+}
+
+const resolvedSessionNames = SESSION_NAMES.length ? SESSION_NAMES : ["Venda 1"];
+const sessions = resolvedSessionNames.map((name, index) => createSession(name, index));
+const sessionByName = new Map(sessions.map((session) => [session.name, session]));
+
+function resolveSessionByName(name) {
+  if (!name) return sessions[0] || null;
+  return sessionByName.get(name) || sessions[0] || null;
+}
+
+followUpService.setSender(async (rec, message) => {
+  const session = resolveSessionByName(rec?.sessionName);
+  if (!session) throw new Error("Sessao nao encontrada para follow-up");
+  if (!session.ready) throw new Error(`Sessao ${session.name} ainda nao pronta`);
+
+  const ctx = {
+    contactType: "CONTATO",
+    name: (rec?.clientName || "").trim(),
+    phoneE164: (rec?.clientPhone || "").trim(),
+    chatId: rec?.chatId || "",
+    origin: "BOT",
+    sessionName: session.name
+  };
+
+  markBotSent(session, rec.chatId, message);
+  const sent = await session.client.sendMessage(rec.chatId, message);
+  const id = sent?.id?._serialized;
+  if (id) session.botSentMessageIds.add(id);
+  logger.messageSent(ctx, message);
+  return sent;
 });
 
-client.on("message", async (msg) => {
-  touchActivity();
+function setupSessionHandlers(session) {
+  const { client } = session;
 
-  const isFromMe = !!msg.fromMe;
-  const msgId = getSerializedMessageId(msg);
+  client.on("qr", (qr) => {
+    touchActivity();
+    session.latestQr = qr;
+    const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qr)}`;
+    logger.info(`[${session.name}] QR Code gerado. Abra o link abaixo para escanear:`);
+    logger.info(`[${session.name}] ${qrImgUrl}`);
+    logger.info(`[${session.name}] Opcional: http://localhost:${PORT}/qr`);
+    qrcode.generate(qr, { small: true });
+  });
 
-  // Evita logar/processar respostas do BOT ou mensagens de agente já tratadas
-  if (isFromMe) {
-    if (msgId && botSentMessageIds.has(msgId)) {
-      botSentMessageIds.delete(msgId);
+  client.on("ready", () => {
+    touchActivity();
+    session.ready = true;
+    logger.info(`[${session.name}] Cliente WhatsApp conectado e pronto para receber mensagens.`);
+    followUpService.tick().catch((err) => logger.error("[FollowUp] Tick inicial falhou", err));
+  });
+
+  client.on("message", async (msg) => {
+    touchActivity();
+
+    const isFromMe = !!msg.fromMe;
+    const msgId = getSerializedMessageId(msg);
+
+    if (isFromMe) {
+      if (msgId && session.botSentMessageIds.has(msgId)) {
+        session.botSentMessageIds.delete(msgId);
+        return;
+      }
+      const fpKeyOut = `${msg?.to || msg?.from || ""}|${(msg?.body || "").trim()}`;
+      const fpExpOut = session.botSentFingerprints.get(fpKeyOut);
+      if (fpExpOut) {
+        session.botSentFingerprints.delete(fpKeyOut);
+        if (fpExpOut > Date.now()) return;
+      }
+      if (msgId && session.agentProcessedMessageIds.has(msgId)) return;
+
+      const contentAgent = formatConteudoParaLog(msg);
+      let result = null;
+      let errorForLog = null;
+
+      try {
+        result = await processAgentMessage(session, msg);
+      } catch (err) {
+        errorForLog = { type: "PROCESS_ERROR", details: err?.message || "Falha ao processar comando do agente", err };
+        logger.error("Erro ao processar mensagem (AGENTE)", err);
+      }
+
+      const ctx = result?.ctx || {
+        contactType: resolveTipoContato(null, msg?.to || msg?.from || ""),
+        name: "",
+        phoneE164: normalizeToE164BR(msg?.to || msg?.from || "") || "",
+        chatId: msg?.to || msg?.from || "",
+        origin: "AGENTE",
+        sessionName: session.name
+      };
+      const content = result?.content || contentAgent;
+      const errBlock = errorForLog || result?.errorForLog ? { error: errorForLog || result?.errorForLog } : {};
+      logger.messageSent(ctx, content, errBlock);
+      if (msgId) session.agentProcessedMessageIds.add(msgId);
       return;
     }
-    const fpKeyOut = `${msg?.to || msg?.from || ""}|${(msg?.body || "").trim()}`;
-    const fpExpOut = botSentFingerprints.get(fpKeyOut);
-    if (fpExpOut) {
-      botSentFingerprints.delete(fpKeyOut);
-      if (fpExpOut > Date.now()) return;
-    }
-    if (msgId && agentProcessedMessageIds.has(msgId)) return;
 
-    const contentAgent = formatConteudoParaLog(msg);
-    let result = null;
+    const content = formatConteudoParaLog(msg);
+    try {
+      const result = await processMessage(session, msg);
+      logger.messageReceived(result.ctx, content, result.errorForLog ? { error: result.errorForLog } : {});
+    } catch (err) {
+      logger.error("Erro ao processar mensagem", err);
+      const chatId = msg?.from || "";
+      const fallbackCtx = {
+        contactType: resolveTipoContato(null, chatId),
+        name: "",
+        phoneE164: normalizeToE164BR(chatId) || "",
+        chatId,
+        origin: "CLIENTE",
+        sessionName: session.name
+      };
+      logger.messageReceived(fallbackCtx, content, {
+        error: { type: "PROCESS_ERROR", details: err?.message || "Falha ao processar mensagem", err }
+      });
+    }
+  });
+
+  client.on("message_create", async (msg) => {
+    if (!msg.fromMe) return;
+    touchActivity();
+
+    const msgId = msg?.id?._serialized;
+    if (msgId && session.botSentMessageIds.has(msgId)) {
+      session.botSentMessageIds.delete(msgId);
+      return;
+    }
+
+    const corpo = (msg.body || "").trim();
+
+    const fpKey = `${msg?.to || ""}|${corpo}`;
+    const fpExp = session.botSentFingerprints.get(fpKey);
+    if (fpExp) {
+      session.botSentFingerprints.delete(fpKey);
+      if (fpExp > Date.now()) return;
+    }
+
+    const targetChatId = msg?.to || "";
+    const agentMsgId = getSerializedMessageId(msg);
+    if (agentMsgId && session.agentProcessedMessageIds.has(agentMsgId)) return;
+
+    let ctxToLog = null;
+    let contentToLog = null;
     let errorForLog = null;
 
     try {
-      result = await processAgentMessage(msg);
+      const result = await processAgentMessage(session, msg);
+      ctxToLog = result?.ctx || null;
+      contentToLog = result?.content || null;
+      errorForLog = result?.errorForLog || null;
     } catch (err) {
       errorForLog = { type: "PROCESS_ERROR", details: err?.message || "Falha ao processar comando do agente", err };
-      logger.error("Erro ao processar mensagem (AGENTE)", err);
+      logger.error("Erro ao processar message_create (AGENTE)", err);
+    } finally {
+      const fallbackCtx = ctxToLog || {
+        contactType: resolveTipoContato(null, targetChatId),
+        name: "",
+        phoneE164: normalizeToE164BR(targetChatId) || "",
+        chatId: targetChatId,
+        origin: "AGENTE",
+        sessionName: session.name
+      };
+      const fallbackContent = contentToLog || (corpo || "<sem texto>");
+      logger.messageSent(fallbackCtx, fallbackContent, errorForLog ? { error: errorForLog } : {});
+      if (agentMsgId) session.agentProcessedMessageIds.add(agentMsgId);
     }
+  });
+}
 
-    const ctx = result?.ctx || {
-      contactType: resolveTipoContato(null, msg?.to || msg?.from || ""),
-      name: "",
-      phoneE164: normalizeToE164BR(msg?.to || msg?.from || "") || "",
-      chatId: msg?.to || msg?.from || "",
-      origin: "AGENTE"
-    };
-    const content = result?.content || contentAgent;
-    const errBlock = errorForLog || result?.errorForLog ? { error: errorForLog || result?.errorForLog } : {};
-    logger.messageSent(ctx, content, errBlock);
-    if (msgId) agentProcessedMessageIds.add(msgId);
-    return;
-  }
+for (const session of sessions) {
+  setupSessionHandlers(session);
+  session.client.initialize();
+}
 
-  const content = formatConteudoParaLog(msg);
-  try {
-    const result = await processMessage(msg);
-    logger.messageReceived(result.ctx, content, result.errorForLog ? { error: result.errorForLog } : {});
-  } catch (err) {
-    logger.error("Erro ao processar mensagem", err);
-    const chatId = msg?.from || "";
-    const fallbackCtx = {
-      contactType: resolveTipoContato(null, chatId),
-      name: "",
-      phoneE164: normalizeToE164BR(chatId) || "",
-      chatId,
-      origin: "CLIENTE"
-    };
-    logger.messageReceived(fallbackCtx, content, {
-      error: { type: "PROCESS_ERROR", details: err?.message || "Falha ao processar mensagem", err }
-    });
-  }
-});
-
-// Log estruturado para mensagens enviadas pela prÃ³pria conta
-client.on("message_create", async (msg) => {
-  if (!msg.fromMe) return;
-  touchActivity();
-
-  const msgId = msg?.id?._serialized;
-  if (msgId && botSentMessageIds.has(msgId)) {
-    botSentMessageIds.delete(msgId);
-    return;
-  }
-
-  const corpo = (msg.body || "").trim();
-  const corpoUpper = corpo.toUpperCase();
-
-  const fpKey = `${msg?.to || ""}|${corpo}`;
-  const fpExp = botSentFingerprints.get(fpKey);
-  if (fpExp) {
-    botSentFingerprints.delete(fpKey);
-    if (fpExp > Date.now()) return;
-  }
-
-  const targetChatId = msg?.to || "";
-  const agentMsgId = getSerializedMessageId(msg);
-  if (agentMsgId && agentProcessedMessageIds.has(agentMsgId)) return;
-
-  let ctxToLog = null;
-  let contentToLog = null;
-  let errorForLog = null;
-
-  try {
-    const result = await processAgentMessage(msg);
-    ctxToLog = result?.ctx || null;
-    contentToLog = result?.content || null;
-    errorForLog = result?.errorForLog || null;
-  } catch (err) {
-    errorForLog = { type: "PROCESS_ERROR", details: err?.message || "Falha ao processar comando do agente", err };
-    logger.error("Erro ao processar message_create (AGENTE)", err);
-  } finally {
-    const fallbackCtx = ctxToLog || {
-      contactType: resolveTipoContato(null, targetChatId),
-      name: "",
-      phoneE164: normalizeToE164BR(targetChatId) || "",
-      chatId: targetChatId,
-      origin: "AGENTE"
-    };
-    const fallbackContent = contentToLog || (corpo || "<sem texto>");
-    logger.messageSent(fallbackCtx, fallbackContent, errorForLog ? { error: errorForLog } : {});
-    if (agentMsgId) agentProcessedMessageIds.add(agentMsgId);
-  }
-});
-
-client.initialize();
 
 // Servidor simples para exibir o QR em pagina web
 app.get("/", (_req, res) => res.redirect("/qr"));
@@ -1137,32 +1364,47 @@ app.get("/qr", (_req, res) => {
   <head>
     <meta charset="utf-8" />
     <title>QR WhatsApp</title>
-    <meta http-equiv="refresh" content="6" />
     <style>
-      body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-      .card { background: #1e293b; padding: 24px 28px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); text-align: center; }
-      #qrcode { margin: 16px auto; }
-      .info { font-size: 14px; color: #cbd5e1; }
+      body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+      .shell { max-width: 1100px; margin: 0 auto; padding: 32px 20px; }
+      .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+      .card { background: #1e293b; padding: 18px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); text-align: center; }
+      .card h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
+      .qr { margin: 8px auto; width: 220px; height: 220px; }
+      .info { font-size: 13px; color: #cbd5e1; margin-top: 12px; }
     </style>
   </head>
   <body>
-    <div class="card">
-      <h2>Escaneie o QR do WhatsApp</h2>
-      <div id="qrcode"></div>
-      <div class="info">A pÃ¡gina atualiza a cada 6s enquanto um novo QR estiver disponÃ­vel.</div>
+    <div class="shell">
+      <h2>QRs das sessoes</h2>
+      <div id="qr-grid" class="grid"></div>
+      <div class="info">Atualiza automaticamente a cada 6s.</div>
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script>
-      const qrData = ${JSON.stringify(latestQr || "")};
-      if (qrData) {
-        new QRCode(document.getElementById("qrcode"), {
-          text: qrData,
-          width: 280,
-          height: 280
+      async function loadQr() {
+        const res = await fetch("/qr.json");
+        const data = await res.json();
+        const grid = document.getElementById("qr-grid");
+        grid.innerHTML = "";
+        (data.sessions || []).forEach((sess) => {
+          const card = document.createElement("div");
+          card.className = "card";
+          card.innerHTML = "<h3>" + (sess.name || "Sessao") + "</h3>" +
+            "<div class='qr'></div>" +
+            "<div class='info'>" + (sess.qr ? "Pronto para escanear" : "QR ainda nao gerado") + "</div>";
+          grid.appendChild(card);
+          if (sess.qr) {
+            new QRCode(card.querySelector(".qr"), {
+              text: sess.qr,
+              width: 220,
+              height: 220
+            });
+          }
         });
-      } else {
-        document.getElementById("qrcode").innerHTML = "<p>QR ainda nÃ£o gerado.</p>";
       }
+      loadQr();
+      setInterval(loadQr, 6000);
     </script>
   </body>
 </html>`;
@@ -1170,11 +1412,11 @@ app.get("/qr", (_req, res) => {
 });
 
 app.get("/qr.json", (_req, res) => {
-  res.json({ qr: latestQr || null });
+  res.json({ sessions: sessions.map((session) => ({ name: session.name, qr: session.latestQr || null })) });
 });
 
-app.listen(QR_PORT, () => {
-  logger.info(`Servidor de QR em http://localhost:${QR_PORT}/qr`);
+app.listen(PORT, () => {
+  logger.info(`Servidor em http://localhost:${PORT}`);
 });
 
 // Ping periÃ³dico opcional para manter o serviÃ§o acordado (defina SELF_PING_URL)
