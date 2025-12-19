@@ -1,10 +1,17 @@
 {
   "records": [
     {
-      "id": "80dc7168-fab8-4a73-9bd3-5e3294b479fe",
+      "id": "d04848a1-69bf-4840-bc1e-5c3b06c6a18f",
       "clientPhone": "+5524999157259",
       "chatId": "5524999157259@c.us",
-      "createdAt": "2025-12-18T18:19:52.489Z",
+      "createdAt": "2025-12-19T01:43:15.823Z",
+      "clientName": ""
+    },
+    {
+      "id": "7ae105d5-a167-47f0-9c2e-b716e28d2917",
+      "clientPhone": "+5524999663511",
+      "chatId": "27320907755643@lid",
+      "createdAt": "2025-12-19T01:41:12.176Z",
       "clientName": ""
     }
   ]

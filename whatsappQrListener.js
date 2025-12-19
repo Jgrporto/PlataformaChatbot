@@ -59,6 +59,7 @@ const aguardandoMac = new Set(); // chatId (compat: permite cliente enviar #IBO 
 const aguardandoMacAgente = new Map(); // chatId -> { phone, nome, fluxo }
 const fluxoCelular = new Map(); // chatId -> { stage: 'aguardando_prova', confirming: bool, mac?: string, printReminderSent?: bool }
 const fluxoLazer = new Map(); // chatId -> { stage: 'aguardando_foto' | 'aguardando_playlist_click' }
+const chatIdPhoneCache = new Map(); // chatId -> phoneDigits (E.164-ready)
 let latestQr = "";
 const app = express();
 const QR_PORT = process.env.PORT || 3000;
@@ -140,25 +141,58 @@ async function replyBot(msg, phoneDigits, nome, texto) {
 async function processAgentMessage(msg) {
   const corpo = (msg?.body || "").trim();
   const corpoUpper = corpo.toUpperCase();
-  const targetChatId = msg?.to || msg?.from || "";
-
   const chat = await msg.getChat().catch(() => null);
+  const targetChatId = resolveTargetChatId(msg, chat);
   const isGroup = !!chat?.isGroup || targetChatId.endsWith("@g.us");
 
   const targetContact = targetChatId
     ? await client.getContactById(targetChatId).catch(() => null)
     : null;
 
-  const phone = cleanPhone(targetContact?.number || targetChatId);
+  let phone = "";
+  let phoneE164 = "";
+
+  if (msg?.hasQuotedMsg) {
+    const quoted = await msg.getQuotedMessage().catch(() => null);
+    if (quoted) {
+      const quotedContact = await quoted.getContact().catch(() => null);
+      const quotedChat = await quoted.getChat().catch(() => null);
+      const quotedPhone = resolvePhone(quotedContact, quoted, quotedChat);
+      if (normalizeToE164BR(quotedPhone)) {
+        phone = quotedPhone;
+        phoneE164 = normalizeToE164BR(quotedPhone) || "";
+        if (targetChatId) chatIdPhoneCache.set(targetChatId, quotedPhone);
+      }
+    }
+  }
+
+  if (!phoneE164 && targetChatId) {
+    const cachedPhone = chatIdPhoneCache.get(targetChatId);
+    if (cachedPhone && normalizeToE164BR(cachedPhone)) {
+      phone = cachedPhone;
+      phoneE164 = normalizeToE164BR(cachedPhone) || "";
+    }
+  }
+
+  if (!phoneE164) {
+    phone = resolvePhone(targetContact, msg, chat);
+    phoneE164 = normalizeToE164BR(phone) || "";
+  }
+
   const nome = resolveNome(targetContact, chat, phone);
   const nomeNewBR = resolveNomeNewBR(targetContact, phone);
-  const phoneE164 = normalizeToE164BR(phone) || "";
   const contactType = resolveTipoContato(chat, targetChatId);
 
   const ctx = { contactType, name: nome, phoneE164, chatId: targetChatId, origin: "AGENTE" };
   const content = formatConteudoParaLog(msg);
 
   if (isGroup) return { ctx, content, errorForLog: null };
+
+  let errorForLog = null;
+  if (!phoneE164) {
+    errorForLog = { type: "PHONE_NOT_FOUND", details: "Telefone do cliente nao identificado para esta conversa." };
+    return { ctx, content, errorForLog };
+  }
 
   if (isInstrucaoMensagem(corpo)) {
     fluxoCelular.set(phone, { stage: "aguardando_prova", confirming: false, printReminderSent: false, mac: null });
@@ -170,7 +204,6 @@ async function processAgentMessage(msg) {
   }
 
   const token = corpoUpper.startsWith("#") ? corpoUpper.split(/\s+/)[0] : "";
-  let errorForLog = null;
 
   if (token === COMMANDS.IBO) {
     // 1) #IBO com mídia enviada pelo próprio agente (lê o MAC direto da imagem)
@@ -211,7 +244,9 @@ async function processAgentMessage(msg) {
     // 2) #IBO marcando mensagem com imagem do cliente
     const handled = await handleIboMensagemMarcada(msg, phone, nomeNewBR);
     if (handled?.ocr?.errorType) {
-      errorForLog = { type: handled.ocr.errorType, details: handled.ocr.reason, err: handled.ocr.err };
+      const textLog = buildOcrTextLog(handled?.ocr?.extractedText || "");
+      const details = handled.ocr.reason + (textLog.text ? ` | texto: ${textLog.text}` : "");
+      errorForLog = { type: handled.ocr.errorType, details, err: handled.ocr.err };
     }
     if (handled?.handled) {
       return { ctx, content, errorForLog };
@@ -253,13 +288,84 @@ function resolveNome(contact, chat, phone) {
   );
 }
 
-function resolvePhone(contact, msg) {
-  const raw =
-    contact?.number ||
-    msg?.from ||
-    msg?.to ||
-    "";
-  return cleanPhone(raw);
+function findValidPhoneDigits(candidates = []) {
+  for (const candidate of candidates) {
+    const digits = extractPhoneFromText(candidate);
+    if (digits) return digits;
+  }
+  return "";
+}
+
+function extractPhoneFromText(text) {
+  const raw = (text || "").toString().trim();
+  if (!raw) return "";
+
+  const matches = raw.match(/(\+?\d[\d\s().-]{8,}\d)/g);
+  if (matches) {
+    for (const match of matches) {
+      const digits = cleanPhone(match);
+      if (normalizeToE164BR(digits)) return digits;
+    }
+  }
+
+  const digits = cleanPhone(raw);
+  if (normalizeToE164BR(digits)) return digits;
+  return "";
+}
+
+function findPhoneFromDisplayName(contact, chat, msg) {
+  const nameCandidates = [
+    contact?.verifiedName,
+    contact?.pushname,
+    contact?.name,
+    contact?.shortName,
+    msg?._data?.notifyName,
+    msg?._data?.sender?.pushname
+  ];
+
+  if (!chat?.isGroup) {
+    nameCandidates.push(chat?.name);
+  }
+
+  return findValidPhoneDigits(nameCandidates);
+}
+
+function resolvePhone(contact, msg, chat) {
+  const chatId = chat?.id?._serialized || "";
+  const chatUser = chat?.id?.user || "";
+  const isSelfContact = !!contact?.isMe;
+  const contactNumber = isSelfContact ? "" : contact?.number;
+  const contactUser = isSelfContact ? "" : contact?.id?.user || "";
+  const contactId = isSelfContact ? "" : contact?.id?._serialized || "";
+  const msgAuthor = msg?.author || "";
+
+  if (msg?.fromMe) {
+    const candidates = [
+      msg?.to,
+      chatId,
+      chatUser,
+      contactNumber,
+      contactUser,
+      contactId,
+      msgAuthor
+    ];
+    const fromCandidates = findValidPhoneDigits(candidates);
+    if (fromCandidates) return fromCandidates;
+    return findPhoneFromDisplayName(contact, chat, msg);
+  }
+
+  const candidates = [
+    contactNumber,
+    contactUser,
+    contactId,
+    chatUser,
+    chatId,
+    msg?.from,
+    msgAuthor
+  ];
+  const fromCandidates = findValidPhoneDigits(candidates);
+  if (fromCandidates) return fromCandidates;
+  return findPhoneFromDisplayName(contact, chat, msg);
 }
 
 function resolveAppName(appEscolhido = "") {
@@ -276,12 +382,12 @@ function resolveAppName(appEscolhido = "") {
 }
 
 const APP_PROFILES = {
-  ASSIST: { keyword: KEYWORD_ASSIST, appName: "assist", display: "🟡 ASSIST PLUS", code: "centertv" },
+  ASSIST: { keyword: KEYWORD_ASSIST, appName: "assist", display: "🟡 ASSIST PLUS", code: "centertv", fallbackFullText: true },
   LAZER: { keyword: KEYWORD_LAZER, appName: "lazer play", display: "🟡 LAZER PLAY", code: "br99" },
   // FUN usa o mesmo bloco/credencial do LAZER, apenas troca o título exibido
   FUN: { keyword: KEYWORD_LAZER, appName: "lazer play", display: "🟡 FUN PLAY", code: "br99" },
   // PLAYSIM busca o bloco do ASSIST, mas exibe título PLAYSIM
-  PLAYSIM: { keyword: KEYWORD_ASSIST, appName: "playsim", display: "🟡 PLAYSIM", code: "centertv" }
+  PLAYSIM: { keyword: KEYWORD_ASSIST, appName: "playsim", display: "🟡 PLAYSIM", code: "centertv", fallbackFullText: true }
 };
 
 function nomeSeguro(nome, phone) {
@@ -291,6 +397,13 @@ function nomeSeguro(nome, phone) {
 
 function resolveChatIdConversa(msg) {
   return msg?.fromMe ? msg?.to : msg?.from;
+}
+
+function resolveTargetChatId(msg, chat) {
+  if (msg?.fromMe) {
+    return msg?.to || chat?.id?._serialized || "";
+  }
+  return msg?.from || chat?.id?._serialized || "";
 }
 
 async function gerarTesteSeguro(cliente, nome = "", appEscolhido = "", mac) {
@@ -398,14 +511,54 @@ async function lerTextoDaImagem(msg) {
   return { ok: !!texto.trim(), texto };
 }
 
+function buildOcrTextLog(extractedText) {
+  const cleaned = (extractedText || "").replace(/\s+/g, " ").trim();
+  const logFull = (process.env.OCR_LOG_FULL_TEXT || "0") === "1";
+  const text = logFull ? cleaned : cleaned.slice(0, 200);
+  return { text, textLen: cleaned.length, logFull };
+}
+
 async function lerMacDaImagem(msg) {
   if (!msg.hasMedia) return { ok: false, reason: "Mensagem nao possui midia" };
 
+  const msgId = msg?.id?._serialized || "";
+  const mime = msg?._data?.mimetype || msg?._data?.mimeType || "";
+  const downloadStart = Date.now();
+  logger.info(`[OCR] Download midia inicio (msgId=${msgId} mime=${mime || "n/a"})`);
   const media = await msg.downloadMedia();
-  if (!media?.data) return { ok: false, reason: "Falha ao baixar a midia" };
+  const downloadMs = Date.now() - downloadStart;
+
+  if (!media?.data) {
+    logger.warn(`[OCR] Download midia sem dados (msgId=${msgId} ms=${downloadMs})`);
+    return { ok: false, reason: "Falha ao baixar a midia" };
+  }
 
   const buffer = Buffer.from(media.data, "base64");
-  const result = await extractMacFromImageBuffer(buffer);
+  const bufferBytes = buffer.length;
+  logger.info(`[OCR] Download midia fim (msgId=${msgId} ms=${downloadMs} bytes=${bufferBytes})`);
+
+  const ocrStart = Date.now();
+  const slowMs = Number(process.env.OCR_SLOW_LOG_MS || 60000);
+  let slowTimer = null;
+  if (slowMs > 0) {
+    slowTimer = setTimeout(() => {
+      const elapsed = Date.now() - ocrStart;
+      logger.warn(`[OCR] OCR ainda em andamento (msgId=${msgId} ms=${elapsed})`);
+    }, slowMs);
+  }
+
+  let result;
+  try {
+    logger.info(`[OCR] OCR inicio (msgId=${msgId} bytes=${bufferBytes})`);
+    result = await extractMacFromImageBuffer(buffer);
+  } finally {
+    if (slowTimer) clearTimeout(slowTimer);
+  }
+
+  const ocrMs = Date.now() - ocrStart;
+  logger.info(
+    `[OCR] OCR fim (msgId=${msgId} ms=${ocrMs} ok=${result?.ok ? "1" : "0"} errorType=${result?.errorType || "n/a"} usedFallback=${result?.usedFallback ? "1" : "0"} rotateAuto=${result?.usedRotateAuto ? "1" : "0"})`
+  );
 
   if (result.ok) {
     return { ok: true, mac: result.mac, reason: "", errorType: null, extractedText: result.extractedText || "" };
@@ -505,6 +658,18 @@ async function responderComTeste(msg, phone, nome, profile, mac) {
   let filtrado = filtrarBloco(reply, keyword);
 
   if (!filtrado) {
+    if (profile?.fallbackFullText && reply) {
+      const credFallback = extrairCredenciais(reply);
+      const codigoFallback = defaultCode || credFallback.codigo;
+      if (credFallback.usuario || credFallback.senha || codigoFallback) {
+        const partes = [display, ""];
+        if (codigoFallback) partes.push(`✅   Cod: ${codigoFallback}`);
+        if (credFallback.usuario) partes.push(`✅  *Usuário:* ${credFallback.usuario}`);
+        if (credFallback.senha) partes.push(`✅  *Senha:* ${credFallback.senha}`);
+        await replyBot(msg, phone, nome, partes.join("\n"));
+        return;
+      }
+    }
     await replyBot(msg, phone, nome, `Nao encontrei conteudo para ${keyword}.`);
     return;
   }
@@ -518,7 +683,7 @@ async function responderComTeste(msg, phone, nome, profile, mac) {
   filtrado = filtrado.replace(keywordRegex, "").replace(comandosRegex, "").trim();
 
   const cred = extrairCredenciais(filtrado);
-  const codigoFinal = cred.codigo || defaultCode;
+  const codigoFinal = defaultCode || cred.codigo;
 
   if (cred.usuario || cred.senha || codigoFinal) {
     const partes = [display, ""];
@@ -658,25 +823,15 @@ async function handleIboMensagemMarcada(msg, phone, nome) {
   }
 
   let leitura = null;
-  const OCR_MARK_TIMEOUT_MS = Number(process.env.OCR_MARK_TIMEOUT_MS || 15000);
-  let ocrTimeoutId = null;
   try {
     logger.info("[IBO] Iniciando OCR da imagem marcada (agente)");
-    const timeoutPromise = new Promise((_, reject) => {
-      ocrTimeoutId = setTimeout(
-        () => reject(new Error(`Timeout OCR imagem marcada apos ${OCR_MARK_TIMEOUT_MS}ms`)),
-        OCR_MARK_TIMEOUT_MS
-      );
-    });
-    leitura = await Promise.race([lerMacDaImagem(quoted), timeoutPromise]);
+    leitura = await lerMacDaImagem(quoted);
   } catch (err) {
     logger.error("[IBO] Falha ao ler MAC da imagem marcada", err);
     return {
       handled: true,
       ocr: { ok: false, errorType: "OCR_ERROR", reason: err?.message || "Erro ao ler imagem marcada", err }
     };
-  } finally {
-    if (ocrTimeoutId) clearTimeout(ocrTimeoutId);
   }
   if (!leitura.ok || !leitura.mac) {
     const chatId = msg?.from || msg?.to || "";
@@ -684,10 +839,14 @@ async function handleIboMensagemMarcada(msg, phone, nome) {
       aguardandoMac.add(chatId);
       aguardandoMacAgente.set(chatId, { phone, nome, fluxo: "IBO" });
     }
+    const textLog = buildOcrTextLog(leitura.extractedText);
     logger.warn("[IBO] OCR nao encontrou MAC na imagem marcada pelo agente", {
       phone,
       nome,
-      reason: leitura.reason || "sem motivo"
+      reason: leitura.reason || "sem motivo",
+      textExtracted: textLog.text,
+      textLen: textLog.textLen,
+      textFull: textLog.logFull ? "1" : "0"
     });
     await replyBot(msg, phone, nome, MSG_OCR_FALHA_AGUARDANDO_AGENTE);
     return { handled: true, ocr: leitura };
@@ -901,13 +1060,16 @@ async function processMessage(msg) {
   const contact = await msg.getContact().catch(() => null);
   const chat = await msg.getChat().catch(() => null);
   const chatId = msg?.from || "";
-  const phone = resolvePhone(contact, msg);
+  const phone = resolvePhone(contact, msg, chat);
   const nome = resolveNome(contact, chat, phone);
   const nomeNewBR = resolveNomeNewBR(contact, phone);
   const texto = (msg.body || "").trim();
   const textoLower = texto.toLowerCase();
   const contactType = resolveTipoContato(chat, chatId);
   const phoneE164 = normalizeToE164BR(phone) || "";
+  if (chatId && phoneE164) {
+    chatIdPhoneCache.set(chatId, phone);
+  }
 
   let errorForLog = null;
   const finish = () => ({ ctx: { contactType, name: nome, phoneE164, chatId, origin: "CLIENTE" }, errorForLog });
@@ -1129,7 +1291,9 @@ client.on("message_create", async (msg) => {
 client.initialize();
 
 // Servidor simples para exibir o QR em pagina web
-app.get("/", (_req, res) => res.redirect("/qr"));
+app.get("/", (_req, res) => {
+  res.status(200).json({ status: "ok", qr: latestQr ? "available" : "pending" });
+});
 app.get("/qr", (_req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   const html = `<!doctype html>
