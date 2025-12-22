@@ -1,7 +1,6 @@
 {
   "records": [
     {
-<<<<<<< HEAD
       "id": "d04848a1-69bf-4840-bc1e-5c3b06c6a18f",
       "clientPhone": "+5524999157259",
       "chatId": "5524999157259@c.us",
@@ -13,12 +12,6 @@
       "clientPhone": "+5524999663511",
       "chatId": "27320907755643@lid",
       "createdAt": "2025-12-19T01:41:12.176Z",
-=======
-      "id": "cfd6cb94-aa24-4d77-a8dd-0f737140b4d9",
-      "clientPhone": "+5524999157259",
-      "chatId": "5524999157259@c.us",
-      "createdAt": "2025-12-18T22:21:21.437Z",
->>>>>>> 46a5a9be8ae3d1791f4493fd70d1b2b909651c45
       "clientName": ""
     }
   ]

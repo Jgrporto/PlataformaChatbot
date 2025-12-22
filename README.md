@@ -1,72 +1,96 @@
-# APIsTV
+# Plataforma Chatbot +TV
 
-Passo a passo para instalar, configurar e rodar os scripts. Inclui a lógica de cada fluxo para facilitar ajustes.
+Painel admin web + WhatsApp bot com persistencia local (SQLite) e atualizacao em tempo real via WebSocket.
 
-## 1) Instalação
-- Requisitos: Node.js 18+ e npm; acesso a `painel.newbr.top`, `botbot.chat`, `gerenciaapp.top`.
-- Instale dependências:
-  ```bash
-  npm install
-  ```
-  Se o download do Chromium falhar, use `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1` e defina `PUPPETEER_EXECUTABLE_PATH` apontando para um Chrome/Chromium instalado.
+## Requisitos
+- Node.js 18+
+- acesso a `painel.newbr.top` e `gerenciaapp.top`
 
-## 2) O que configurar
-- BotBot e números: `server.js`, `send.js`, `listener.js`, `filterAndSend.js`, `autoAssist.js` (appkey/authkey, números de destino).
-- WhatsApp QR: `KEYWORD` e `DEVICE_PHONE` em `whatsappQrListener.js`; sessão fica em `.wwebjs_auth`.
-- GerenciaApp: `GERENCIA_USER`, `GERENCIA_PASS` e `FORM_DATA` em `gerenciaApp.js`.
-- Números de teste/destino: `sendNewBR.js`, `filterAndSend.js`, `autoAssist.js`, `listener.js`, `server.js`.
+## Instalacao
+```bash
+npm install
+```
 
-## 3) Fluxos principais
-- `server.js` (webhook + automação inicial):
-  - Sobe em `PORT` (padrão 3000) com `POST /webhook` esperando `{ from, message }`.
-  - Se recebe `ASSIST`, gera teste na API NewBR, filtra bloco `ASSIST PLUS` e responde via BotBot.
-  - Na inicialização, gera um teste, extrai M3U e cadastra no GerenciaApp via `criarUsuarioGerenciaAppComM3u`; envia mensagem de sucesso.
-- `whatsappQrListener.js` (WhatsApp Web + OCR de MAC):
-  - Primeiro run: mostra QR no terminal; após parear, reusa sessão.
-  - Texto igual a `KEYWORD`: gera teste na NewBR, extrai M3U e cria usuário no GerenciaApp.
-  - Imagens: baixa mídia, roda OCR (`tesseract.js`) e procura MAC (XX:XX:XX:XX:XX:XX ou 12 hex). Se achar, responde com o MAC.
-- `gerenciaApp.js` (Puppeteer):
-  - Faz login no GerenciaApp e preenche o formulário de criação de usuário via labels (`fillByLabel`), depois envia.
-- `listener.js` (polling BotBot):
-  - Busca mensagens recebidas; responde apenas ao número admin com comando `ASSIST`.
-  - Gera teste, filtra `ASSIST PLUS` e envia via BotBot. Ignora histórico inicial para evitar duplicar.
-- `autoAssist.js` (simples):
-  - Recebe `ASSIST` do admin e devolve o bloco filtrado `ASSIST PLUS`.
-- `filterAndSend.js`:
-  - Dispara um teste, filtra `ASSIST PLUS` e envia para `NUMERO_DESTINO`.
-- Exemplos:
-  - `send.js`: envia mensagem fixa via BotBot.
-  - `sendNewBR.js`: chama API NewBR e imprime resposta.
+## Como rodar
+```bash
+npm run dev
+```
 
-## 4) Como rodar
-- Servidor principal (webhook + automação inicial):
-  ```bash
-  node server.js
-  ```
-- Listener WhatsApp com OCR:
-  ```bash
-  node whatsappQrListener.js
-  ```
-  Escaneie o QR; envie `KEYWORD` ou imagem com MAC para testar.
-- Outros: execute o script desejado (`node listener.js`, `node autoAssist.js`, `node filterAndSend.js`, etc.).
+Ou em producao:
+```bash
+npm start
+```
 
-## 5) Testes rápidos
-- Webhook local:
-  ```bash
-  curl -X POST http://localhost:3000/webhook ^
-    -H "Content-Type: application/json" ^
-    -d "{\"from\":\"5524999999999\",\"message\":\"ASSIST\"}"
-  ```
-- OCR/MAC: com `whatsappQrListener.js` pareado, envie uma foto com MAC legível; o bot deve responder `MAC detectado: ...`.
+Acesse:
+- Painel: http://localhost:3200/admin
+- QR legado: http://localhost:3200/qr
 
-## 6) Observações
-- Se Puppeteer ou Tesseract não baixarem assets por bloqueio de rede, aponte para binários/dados locais (`PUPPETEER_EXECUTABLE_PATH`, `TESSDATA_PREFIX`) ou rode em máquina com acesso liberado.
-- Ajuste chaves e números antes de usar em produção; os valores no código são placeholders de teste.
+## Variaveis de ambiente
+- `ADMIN_USER` / `ADMIN_PASS`: login do painel
+- `SESSION_SECRET`: segredo da session
+- `PORT`: porta do servidor (padrao 3200)
+- `SESSION_NAMES`: nomes das sessoes separadas por virgula (ex: "Venda 1,Venda 2")
+- `DEVICE_PHONE`: numero do dispositivo principal (E.164)
+- `FOLLOWUP_MS`: atraso do follow-up (ms)
+- `FOLLOWUP_STORAGE_PATH`: caminho do JSON de follow-ups
+- `DB_PATH`: caminho do SQLite (padrao `data/app.db`)
+- `WWEB_AUTH_PATH`: pasta de auth do whatsapp-web.js (padrao `.wwebjs_auth`)
 
+## Arquitetura
+- `src/server.js`: Express + WebSocket + rotas
+- `src/bot/`: WhatsApp sessions e processamento de mensagens
+- `src/api/`: endpoints REST do painel
+- `src/db/`: SQLite + migrations + repositorios
+- `src/realtime/`: WebSocket
+- `admin/`: SPA estatica (HTML/CSS/JS)
+- `data/app.db`: SQLite (criado automaticamente)
 
-## 7) Variaveis para o Railway
-- GERENCIA_USER / GERENCIA_PASS / GERENCIA_LOGIN_URL / GERENCIA_CREATE_URL: credenciais e URLs do GerenciaApp.
-- BOTBOT_APPKEY / BOTBOT_AUTHKEY: chaves do bot (substitua os valores hardcoded).
-- DEVICE_PHONE: numero conectado ao BotBot/WhatsApp.
-- PUPPETEER_SKIP_CHROMIUM_DOWNLOAD (opcional): defina 1 se for usar Chromium do sistema; combine com PUPPETEER_EXECUTABLE_PATH.
-- TESSDATA_PREFIX (opcional): caminho do eng.traineddata se nao usar o arquivo local.
+## Endpoints principais
+Auth:
+- `POST /api/login`
+- `POST /api/logout`
+- `GET /api/me`
+
+Devices:
+- `POST /api/devices`
+- `GET /api/devices`
+- `GET /api/devices/:id/qr`
+- `POST /api/devices/:id/reconnect`
+- `DELETE /api/devices/:id`
+
+Chatbot:
+- `GET /api/chatbot/commands`
+- `POST /api/chatbot/commands`
+- `PUT /api/chatbot/commands/:id`
+- `DELETE /api/chatbot/commands/:id`
+- `GET /api/chatbot/quick-replies`
+- `POST /api/chatbot/quick-replies`
+- `PUT /api/chatbot/quick-replies/:id`
+- `DELETE /api/chatbot/quick-replies/:id`
+- `GET /api/chatbot/flows`
+- `POST /api/chatbot/flows`
+- `PUT /api/chatbot/flows/:id`
+- `DELETE /api/chatbot/flows/:id`
+
+Interacoes:
+- `GET /api/interactions?from=&to=&q=&deviceId=`
+- `GET /api/contacts/:phone/history`
+
+Testes:
+- `GET /api/tests?status=&from=&to=&deviceId=`
+- `GET /api/tests/:id`
+
+Compatibilidade:
+- `GET /api/commands`
+- `GET /api/commands/flows`
+- `GET /qr`
+
+## Realtime
+WebSocket em `ws://<host>/ws` com eventos:
+- `device.created`, `device.updated`, `device.reconnected`, `device.removed`, `device.activity`
+- `interaction.new`
+- `message.new`
+
+## Observacoes
+- `whatsappQrListener.js` permanece como entrypoint legado e apenas importa `src/server.js`.
+- Migrations SQLite rodam automaticamente ao iniciar.

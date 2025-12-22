@@ -70,7 +70,7 @@ export class FollowUpService {
     await writeJsonAtomic(this.storagePath, { records });
   }
 
-  schedule({ clientPhone, chatId, createdAt, clientName, sessionName }) {
+  schedule({ clientPhone, chatId, createdAt, clientName, sessionName, deviceId }) {
     const created = createdAt instanceof Date ? createdAt.toISOString() : createdAt;
     const rec = {
       id: randomUUID(),
@@ -78,7 +78,8 @@ export class FollowUpService {
       chatId,
       createdAt: created || new Date().toISOString(),
       clientName: clientName || "",
-      sessionName: sessionName || this.defaultSessionName || ""
+      sessionName: sessionName || this.defaultSessionName || "",
+      deviceId: deviceId || ""
     };
 
     this.byChatKey.set(this.buildKey(rec), rec);

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { logTestRun } from "../src/db/repositories/tests.js";
 
 const NEWBR_URL =
   process.env.NEWBR_URL ||
@@ -22,7 +23,8 @@ export async function criarTesteNewBR({
   devicePhone,
   clientName,
   clientWhatsappE164,
-  flowLabel
+  flowLabel,
+  deviceId
 }) {
   const observations = buildObservations({ flowLabel });
 
@@ -42,11 +44,37 @@ export async function criarTesteNewBR({
     payload.customerName = clientName;
   }
 
-  const res = await axios.post(NEWBR_URL, payload, {
-    headers: { "Content-Type": "application/json" },
-    auth: { username: NEWBR_AUTH_USER, password: NEWBR_AUTH_PASS }
-  });
+  let responseData = null;
+  let status = "success";
+  let errorText = null;
 
-  return res?.data?.reply || "";
+  try {
+    const res = await axios.post(NEWBR_URL, payload, {
+      headers: { "Content-Type": "application/json" },
+      auth: { username: NEWBR_AUTH_USER, password: NEWBR_AUTH_PASS }
+    });
+    responseData = res?.data || null;
+    return res?.data?.reply || "";
+  } catch (err) {
+    status = "error";
+    errorText = err?.message || "request_failed";
+    throw err;
+  } finally {
+    try {
+      await logTestRun(
+        {
+          deviceId: deviceId || null,
+          flow: flowLabel || appName || null,
+          payload,
+          response: responseData,
+          status,
+          errorText
+        },
+        null
+      );
+    } catch {
+      // ignore logging errors
+    }
+  }
 }
 
