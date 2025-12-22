@@ -280,6 +280,17 @@ body {
   color: var(--muted);
 }
 
+.qr-preview {
+  width: 140px;
+  height: 140px;
+  margin: 4px auto;
+  background: #0b0f15;
+  border-radius: 12px;
+  border: 1px solid var(--stroke);
+  display: grid;
+  place-items: center;
+}
+
 .status {
   display: inline-flex;
   align-items: center;

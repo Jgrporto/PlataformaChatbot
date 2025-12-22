@@ -37,6 +37,7 @@ const loginScreen = el("login-screen");
 const loginHint = el("login-hint");
 const userChip = el("user-chip");
 const wsStatus = el("ws-status");
+let qrPoller = null;
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -66,6 +67,10 @@ function showModal(title, content) {
 function hideModal() {
   modal.classList.add("hidden");
   modalBody.innerHTML = "";
+  if (qrPoller) {
+    clearInterval(qrPoller);
+    qrPoller = null;
+  }
 }
 
 function setView(view) {
@@ -129,6 +134,18 @@ function renderDevices() {
     meta.className = "device-meta";
     meta.textContent = `Ultima atividade: ${formatDate(device.lastActivity)}`;
 
+    let qrBox = null;
+    if (device.qr && window.QRCode) {
+      qrBox = document.createElement("div");
+      qrBox.className = "qr-preview";
+      qrBox.innerHTML = "";
+      new window.QRCode(qrBox, {
+        text: device.qr,
+        width: 140,
+        height: 140
+      });
+    }
+
     const actions = document.createElement("div");
     actions.className = "form-row";
 
@@ -148,7 +165,11 @@ function renderDevices() {
     remove.addEventListener("click", () => deleteDevice(device.id));
 
     actions.append(qrBtn, reconnect, remove);
-    card.append(title, status, meta, actions);
+    if (qrBox) {
+      card.append(title, status, meta, qrBox, actions);
+    } else {
+      card.append(title, status, meta, actions);
+    }
     grid.appendChild(card);
   });
 }
@@ -156,7 +177,7 @@ function renderDevices() {
 async function openQrModal(device) {
   const box = document.createElement("div");
   const qrInfo = document.createElement("div");
-  qrInfo.textContent = device.qr ? "Escaneie o QR abaixo." : "QR ainda nao gerado.";
+  qrInfo.textContent = "Escaneie o QR abaixo.";
   const qrBox = document.createElement("div");
   qrBox.style.width = "240px";
   qrBox.style.height = "240px";
@@ -165,13 +186,46 @@ async function openQrModal(device) {
   box.append(qrInfo, qrBox);
   showModal(`QR - ${device.name}`, box);
 
-  if (device.qr && window.QRCode) {
-    qrBox.innerHTML = "";
-    new window.QRCode(qrBox, {
-      text: device.qr,
-      width: 240,
-      height: 240
-    });
+  let qrValue = device.qr;
+  let reconnectTriggered = false;
+  async function refreshQr() {
+    if (!qrValue) {
+      try {
+        const data = await api(`/api/devices/${device.id}/qr`);
+        qrValue = data?.qr || null;
+      } catch {
+        qrValue = null;
+      }
+    }
+
+    if (qrValue && window.QRCode) {
+      qrInfo.textContent = "Escaneie o QR abaixo.";
+      qrBox.innerHTML = "";
+      new window.QRCode(qrBox, {
+        text: qrValue,
+        width: 240,
+        height: 240
+      });
+      if (qrPoller) {
+        clearInterval(qrPoller);
+        qrPoller = null;
+      }
+      return;
+    }
+    qrInfo.textContent = reconnectTriggered ? "Gerando QR..." : "QR ainda nao gerado.";
+    if (!reconnectTriggered) {
+      try {
+        await api(`/api/devices/${device.id}/reconnect`, { method: "POST" });
+        reconnectTriggered = true;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  await refreshQr();
+  if (!qrValue) {
+    qrPoller = setInterval(refreshQr, 3000);
   }
 }
 
@@ -675,13 +729,16 @@ async function init() {
   setView("devices");
   connectWs();
   setInterval(() => {
+    if (qs("#view-devices").classList.contains("active")) {
+      loadDevices().catch(() => {});
+    }
     if (qs("#view-interactions").classList.contains("active")) {
       loadInteractions().catch(() => {});
     }
     if (qs("#view-tests").classList.contains("active")) {
       loadTests().catch(() => {});
     }
-  }, 15000);
+  }, 6000);
 }
 
 init().catch(() => {

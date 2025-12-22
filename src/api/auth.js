@@ -1,7 +1,7 @@
 import session from "express-session";
 
-const ADMIN_USER = process.env.ADMIN_USER || "";
-const ADMIN_PASS = process.env.ADMIN_PASS || "";
+const ADMIN_USER = process.env.ADMIN_USER || "Porto";
+const ADMIN_PASS = process.env.ADMIN_PASS || "senhadobot";
 
 export function setupAuth(app, { logger } = {}) {
   const secret = process.env.SESSION_SECRET || "change-me";

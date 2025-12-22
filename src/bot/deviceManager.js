@@ -99,6 +99,9 @@ export class DeviceManager {
       const session = this.sessions.get(device.id);
       return {
         ...device,
+        status: session?.status || device.status,
+        lastActivity: session?.lastActivity || device.lastActivity,
+        lastError: session?.lastError || device.lastError,
         qr: session?.latestQr || null
       };
     });

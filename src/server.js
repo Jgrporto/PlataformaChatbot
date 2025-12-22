@@ -84,7 +84,11 @@ async function start() {
       session = Array.from(deviceManager.sessions.values()).find((s) => s.name === rec.sessionName) || null;
     }
     if (!session) throw new Error("Sessao nao encontrada para follow-up");
-    if (!session.ready) throw new Error(`Sessao ${session.name} ainda nao pronta`);
+    if (!session.ready) {
+      const err = new Error(`Sessao ${session.name} ainda nao pronta`);
+      err.code = "SESSION_NOT_READY";
+      throw err;
+    }
 
     const chatId = rec.chatId;
     const phoneE164 = normalizeToE164BR(rec.clientPhone) || rec.clientPhone || "";
@@ -145,7 +149,7 @@ async function start() {
   });
 
   app.use("/admin", express.static(ADMIN_DIR));
-  app.get("/admin/*", (_req, res) => {
+  app.get(/^\/admin\/.*$/, (_req, res) => {
     res.sendFile(path.join(ADMIN_DIR, "index.html"));
   });
 

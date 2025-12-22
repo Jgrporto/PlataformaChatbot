@@ -114,6 +114,12 @@ export class FollowUpService {
         this.byChatKey.delete(this.buildKey(rec));
         await this.persist();
       } catch (err) {
+        if (err?.code === "SESSION_NOT_READY") {
+          this.logger?.warn("[FollowUp] Sessao nao pronta para follow-up; mantendo registro", {
+            chatId: rec.chatId
+          });
+          continue;
+        }
         this.logger?.error("[FollowUp] Falha ao enviar follow-up", err, { chatId: rec.chatId });
       }
     }
