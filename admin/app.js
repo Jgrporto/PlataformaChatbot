@@ -38,6 +38,7 @@ const loginHint = el("login-hint");
 const userChip = el("user-chip");
 const wsStatus = el("ws-status");
 let qrPoller = null;
+let qrCountdown = null;
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -70,6 +71,10 @@ function hideModal() {
   if (qrPoller) {
     clearInterval(qrPoller);
     qrPoller = null;
+  }
+  if (qrCountdown) {
+    clearInterval(qrCountdown);
+    qrCountdown = null;
   }
 }
 
@@ -135,15 +140,13 @@ function renderDevices() {
     meta.textContent = `Ultima atividade: ${formatDate(device.lastActivity)}`;
 
     let qrBox = null;
-    if (device.qr && window.QRCode) {
+    if (device.qrImage) {
       qrBox = document.createElement("div");
       qrBox.className = "qr-preview";
-      qrBox.innerHTML = "";
-      new window.QRCode(qrBox, {
-        text: device.qr,
-        width: 140,
-        height: 140
-      });
+      const img = document.createElement("img");
+      img.src = device.qrImage;
+      img.alt = "QR";
+      qrBox.appendChild(img);
     }
 
     const actions = document.createElement("div");
@@ -175,58 +178,164 @@ function renderDevices() {
 }
 
 async function openQrModal(device) {
+  if (qrPoller) {
+    clearInterval(qrPoller);
+    qrPoller = null;
+  }
+  if (qrCountdown) {
+    clearInterval(qrCountdown);
+    qrCountdown = null;
+  }
+
   const box = document.createElement("div");
-  const qrInfo = document.createElement("div");
-  qrInfo.textContent = "Escaneie o QR abaixo.";
+  box.className = "qr-modal";
+
+  const info = document.createElement("div");
+  info.className = "qr-info";
+
+  const qrTitle = document.createElement("div");
+  qrTitle.className = "qr-title";
+  qrTitle.textContent = "Escaneie o QR abaixo.";
+
+  const qrNotice = document.createElement("div");
+  qrNotice.className = "qr-notice";
+  qrNotice.textContent = "QR ativo por 2 minutos.";
+
+  const qrTimer = document.createElement("div");
+  qrTimer.className = "qr-timer";
+  qrTimer.textContent = "02:00";
+
+  info.append(qrTitle, qrNotice, qrTimer);
+
   const qrBox = document.createElement("div");
-  qrBox.style.width = "240px";
-  qrBox.style.height = "240px";
-  qrBox.style.margin = "0 auto";
-  qrBox.id = "qr-box";
-  box.append(qrInfo, qrBox);
+  qrBox.className = "qr-box";
+
+  const qrStatus = document.createElement("div");
+  qrStatus.className = "qr-status";
+  qrStatus.textContent = "Gerando QR...";
+
+  const qrActions = document.createElement("div");
+  qrActions.className = "form-row qr-actions";
+
+  let lastQrValue = device.qr || null;
+  let qrImage = device.qrImage || null;
+  let qrIssuedAt = device.qrIssuedAt || null;
+  let reconnectTriggered = false;
+  let qrExpiresAt = null;
+
+  const regenerate = document.createElement("button");
+  regenerate.className = "secondary";
+  regenerate.textContent = "Gerar novo QR";
+  regenerate.addEventListener("click", async () => {
+    qrStatus.textContent = "Gerando QR...";
+    qrBox.classList.remove("expired");
+    qrBox.innerHTML = "";
+    lastQrValue = null;
+    qrImage = null;
+    qrIssuedAt = null;
+    qrExpiresAt = null;
+    reconnectTriggered = true;
+    if (qrCountdown) {
+      clearInterval(qrCountdown);
+      qrCountdown = null;
+    }
+    try {
+      await api(`/api/devices/${device.id}/reconnect`, { method: "POST" });
+    } catch {
+      // ignore
+    }
+    await refreshQr();
+  });
+
+  qrActions.appendChild(regenerate);
+  box.append(info, qrBox, qrStatus, qrActions);
   showModal(`QR - ${device.name}`, box);
 
-  let qrValue = device.qr;
-  let reconnectTriggered = false;
+  function formatCountdown(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function updateCountdown() {
+    if (!qrExpiresAt) {
+      qrTimer.textContent = "02:00";
+      return;
+    }
+    const remaining = qrExpiresAt - Date.now();
+    qrTimer.textContent = formatCountdown(remaining);
+    if (remaining <= 0) {
+      qrStatus.textContent = "QR expirado. Clique em Gerar novo QR.";
+      qrBox.classList.add("expired");
+    }
+  }
+
+  function setExpiry(issuedAt) {
+    const parsed = issuedAt ? new Date(issuedAt).getTime() : Date.now();
+    const base = Number.isNaN(parsed) ? Date.now() : parsed;
+    qrExpiresAt = base + 2 * 60 * 1000;
+    if (qrCountdown) clearInterval(qrCountdown);
+    qrCountdown = setInterval(updateCountdown, 1000);
+    updateCountdown();
+  }
+
+  function renderQr(imageUrl) {
+    if (!imageUrl) return;
+    qrBox.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = imageUrl;
+    img.alt = "QR";
+    qrBox.appendChild(img);
+  }
+
   async function refreshQr() {
-    if (!qrValue) {
-      try {
-        const data = await api(`/api/devices/${device.id}/qr`);
-        qrValue = data?.qr || null;
-      } catch {
-        qrValue = null;
-      }
+    let data = null;
+    try {
+      data = await api(`/api/devices/${device.id}/qr`);
+    } catch {
+      data = null;
     }
 
-    if (qrValue && window.QRCode) {
-      qrInfo.textContent = "Escaneie o QR abaixo.";
-      qrBox.innerHTML = "";
-      new window.QRCode(qrBox, {
-        text: qrValue,
-        width: 240,
-        height: 240
-      });
-      if (qrPoller) {
-        clearInterval(qrPoller);
-        qrPoller = null;
+    const nextQr = data?.qr || null;
+    const nextImage = data?.imageUrl || null;
+    const nextIssuedAt = data?.issuedAt || null;
+
+    if (nextQr && nextImage) {
+      const shouldUpdate = !lastQrValue || nextQr !== lastQrValue || !qrImage || !qrExpiresAt;
+      if (shouldUpdate) {
+        lastQrValue = nextQr;
+        qrImage = nextImage;
+        qrIssuedAt = nextIssuedAt || new Date().toISOString();
+        qrBox.classList.remove("expired");
+        qrStatus.textContent = "Escaneie o QR abaixo.";
+        renderQr(qrImage);
+        setExpiry(qrIssuedAt);
       }
       return;
     }
-    qrInfo.textContent = reconnectTriggered ? "Gerando QR..." : "QR ainda nao gerado.";
-    if (!reconnectTriggered) {
-      try {
-        await api(`/api/devices/${device.id}/reconnect`, { method: "POST" });
-        reconnectTriggered = true;
-      } catch {
-        // ignore
+
+    if (!lastQrValue) {
+      qrStatus.textContent = reconnectTriggered ? "Gerando QR..." : "QR ainda nao gerado.";
+      if (!reconnectTriggered) {
+        try {
+          await api(`/api/devices/${device.id}/reconnect`, { method: "POST" });
+          reconnectTriggered = true;
+        } catch {
+          // ignore
+        }
       }
     }
   }
 
-  await refreshQr();
-  if (!qrValue) {
-    qrPoller = setInterval(refreshQr, 3000);
+  if (qrImage) {
+    qrStatus.textContent = "Escaneie o QR abaixo.";
+    renderQr(qrImage);
+    setExpiry(qrIssuedAt);
   }
+
+  await refreshQr();
+  qrPoller = setInterval(refreshQr, 4000);
 }
 
 async function createDevice() {

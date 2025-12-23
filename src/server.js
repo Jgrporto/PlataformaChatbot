@@ -37,6 +37,32 @@ const touchActivity = () => {
   lastActivity = Date.now();
 };
 
+function isTargetClosedError(err) {
+  if (!err) return false;
+  const msg = err?.message || "";
+  const original = err?.originalMessage || "";
+  const text = `${msg} ${original}`.toLowerCase();
+  return text.includes("target closed") || text.includes("protocol error (runtime.callfunctionon)");
+}
+
+function setupProcessGuards() {
+  process.on("unhandledRejection", (reason) => {
+    if (isTargetClosedError(reason)) {
+      logger.warn("[Process] Puppeteer target fechado", { message: reason?.message || reason });
+      return;
+    }
+    logger.error("[Process] Unhandled rejection", reason);
+  });
+
+  process.on("uncaughtException", (err) => {
+    if (isTargetClosedError(err)) {
+      logger.warn("[Process] Puppeteer target fechado", { message: err?.message || err });
+      return;
+    }
+    logger.error("[Process] Uncaught exception", err);
+  });
+}
+
 async function start() {
   await initDb(logger);
 
@@ -260,6 +286,7 @@ function startIdleLog() {
   }, Math.max(60000, Math.min(IDLE_LOG_MS, 300000)));
 }
 
+setupProcessGuards();
 start().catch((err) => {
   logger.error("[Server] Falha fatal ao iniciar", err);
   process.exit(1);

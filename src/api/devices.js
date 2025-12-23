@@ -1,7 +1,24 @@
+import QRCode from "qrcode";
+
+async function buildQrImage(qrValue) {
+  if (!qrValue) return null;
+  try {
+    return await QRCode.toDataURL(qrValue, { width: 320, margin: 1 });
+  } catch {
+    return null;
+  }
+}
+
 export function registerDeviceRoutes(app, { deviceManager, requireAuth }) {
   app.get("/api/devices", requireAuth, async (_req, res) => {
     const devices = await deviceManager.listDevices();
-    res.json(devices);
+    const enriched = await Promise.all(
+      devices.map(async (device) => ({
+        ...device,
+        qrImage: device.qr ? await buildQrImage(device.qr) : null
+      }))
+    );
+    res.json(enriched);
   });
 
   app.post("/api/devices", requireAuth, async (req, res) => {
@@ -14,9 +31,9 @@ export function registerDeviceRoutes(app, { deviceManager, requireAuth }) {
   });
 
   app.get("/api/devices/:id/qr", requireAuth, async (req, res) => {
-    const qr = deviceManager.getQr(req.params.id);
-    if (!qr) return res.status(404).send("QR nao encontrado.");
-    res.json({ qr });
+    const { qr, issuedAt } = deviceManager.getQrMeta(req.params.id);
+    const imageUrl = qr ? await buildQrImage(qr) : null;
+    res.json({ qr: qr || null, imageUrl, issuedAt: issuedAt || null });
   });
 
   app.post("/api/devices/:id/reconnect", requireAuth, async (req, res) => {

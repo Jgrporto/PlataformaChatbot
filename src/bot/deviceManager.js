@@ -102,7 +102,8 @@ export class DeviceManager {
         status: session?.status || device.status,
         lastActivity: session?.lastActivity || device.lastActivity,
         lastError: session?.lastError || device.lastError,
-        qr: session?.latestQr || null
+        qr: session?.latestQr || null,
+        qrIssuedAt: session?.latestQrAt || null
       };
     });
   }
@@ -110,6 +111,14 @@ export class DeviceManager {
   getQr(deviceId) {
     const session = this.sessions.get(deviceId);
     return session?.latestQr || null;
+  }
+
+  getQrMeta(deviceId) {
+    const session = this.sessions.get(deviceId);
+    return {
+      qr: session?.latestQr || null,
+      issuedAt: session?.latestQrAt || null
+    };
   }
 
   getSession(deviceId) {
@@ -130,6 +139,7 @@ export class DeviceManager {
     if (!session) return null;
     await session.stop();
     this.sessions.delete(deviceId);
+    await this.removeAuth(deviceId);
     const device = await upsertDevice({ id: deviceId, name: session.name, status: "disconnected" }, this.logger);
     const restarted = await this.startSession(device);
     await this.broadcast("device.reconnected", { deviceId });

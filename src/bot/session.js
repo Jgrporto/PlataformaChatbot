@@ -45,6 +45,7 @@ export function createSession({
     cache,
     processor,
     latestQr: "",
+    latestQrAt: null,
     status: "disconnected",
     ready: false,
     lastActivity: null,
@@ -67,6 +68,7 @@ export function createSession({
   client.on("qr", (qr) => {
     touchActivity();
     session.latestQr = qr;
+    session.latestQrAt = new Date().toISOString();
     updateStatus("awaiting_qr", null);
     const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qr)}`;
     logger?.info?.(`[${session.name}] QR Code gerado: ${qrImgUrl}`);
@@ -282,20 +284,21 @@ export function createSession({
     }
   });
 
-  return {
-    ...session,
-    start() {
-      client.initialize();
-    },
-    async stop() {
-      try {
-        await client.destroy();
-      } catch (err) {
-        logger?.warn?.(`[${session.name}] Falha ao destruir cliente`, { error: err?.message });
-      }
-    },
-    markBotSent(chatId, text) {
-      processor.markBotSent(session, chatId, text);
+  session.start = () => {
+    client.initialize();
+  };
+
+  session.stop = async () => {
+    try {
+      await client.destroy();
+    } catch (err) {
+      logger?.warn?.(`[${session.name}] Falha ao destruir cliente`, { error: err?.message });
     }
   };
+
+  session.markBotSent = (chatId, text) => {
+    processor.markBotSent(session, chatId, text);
+  };
+
+  return session;
 }
