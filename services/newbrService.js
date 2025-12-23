@@ -1,5 +1,6 @@
 import axios from "axios";
 import { logTestRun } from "../src/db/repositories/tests.js";
+import { closeConversation, updateConversationFlow } from "../src/db/repositories/conversations.js";
 
 const NEWBR_URL =
   process.env.NEWBR_URL ||
@@ -47,6 +48,7 @@ export async function criarTesteNewBR({
   let responseData = null;
   let status = "success";
   let errorText = null;
+  let shouldClose = false;
 
   try {
     const res = await axios.post(NEWBR_URL, payload, {
@@ -54,6 +56,7 @@ export async function criarTesteNewBR({
       auth: { username: NEWBR_AUTH_USER, password: NEWBR_AUTH_PASS }
     });
     responseData = res?.data || null;
+    shouldClose = true;
     return res?.data?.reply || "";
   } catch (err) {
     status = "error";
@@ -72,6 +75,20 @@ export async function criarTesteNewBR({
         },
         null
       );
+      if (shouldClose && clientWhatsappE164) {
+        await updateConversationFlow(
+          {
+            deviceId: deviceId || null,
+            phone: clientWhatsappE164,
+            flow: flowLabel || appName || null,
+            stage: "teste_gerado"
+          },
+          null
+        );
+      }
+      if (shouldClose && clientWhatsappE164) {
+        await closeConversation({ deviceId: deviceId || null, phone: clientWhatsappE164 }, null);
+      }
     } catch {
       // ignore logging errors
     }

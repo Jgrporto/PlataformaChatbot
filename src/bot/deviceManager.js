@@ -5,12 +5,14 @@ import { createSession } from "./session.js";
 import {
   listDevices,
   createDevice as createDeviceRecord,
+  getDeviceById,
   updateDeviceStatus,
   deleteDevice as deleteDeviceRecord,
   upsertDevice
 } from "../db/repositories/devices.js";
 
 const AUTH_PATH = process.env.WWEB_AUTH_PATH || ".wwebjs_auth";
+const AUTO_START_SESSIONS = process.env.AUTO_START_SESSIONS !== "0";
 const SESSION_NAMES = (process.env.SESSION_NAMES || "Venda 1")
   .split(",")
   .map((name) => name.trim())
@@ -38,13 +40,17 @@ export class DeviceManager {
       }
     }
 
+    if (!AUTO_START_SESSIONS) return;
     const devices = await listDevices(this.logger);
     for (const device of devices) {
-      await this.startSession(device);
+      const hasAuth = await this.hasAuth(device.id);
+      if (hasAuth) {
+        await this.startSession(device, { qrRequested: false });
+      }
     }
   }
 
-  async startSession(device) {
+  async startSession(device, { qrRequested = false } = {}) {
     if (!device?.id) return null;
     const existing = this.sessions.get(device.id);
     if (existing) return existing;
@@ -52,6 +58,7 @@ export class DeviceManager {
     const session = createSession({
       deviceId: device.id,
       name: device.name,
+      qrRequested,
       configService: this.configService,
       followUpService: this.followUpService,
       logger: this.logger,
@@ -73,11 +80,17 @@ export class DeviceManager {
       {
         status: statusUpdate.status,
         lastActivity,
-        lastError: statusUpdate.lastError || null
+        lastError: statusUpdate.lastError || null,
+        devicePhone: statusUpdate.devicePhone || null
       },
       this.logger
     );
-    await this.broadcast("device.updated", { deviceId, status: statusUpdate.status, lastActivity });
+    await this.broadcast("device.updated", {
+      deviceId,
+      status: statusUpdate.status,
+      lastActivity,
+      devicePhone: statusUpdate.devicePhone || null
+    });
   }
 
   async touchActivity(deviceId, ts) {
@@ -102,6 +115,7 @@ export class DeviceManager {
         status: session?.status || device.status,
         lastActivity: session?.lastActivity || device.lastActivity,
         lastError: session?.lastError || device.lastError,
+        devicePhone: session?.devicePhone || device.devicePhone || null,
         qr: session?.latestQr || null,
         qrIssuedAt: session?.latestQrAt || null
       };
@@ -117,7 +131,8 @@ export class DeviceManager {
     const session = this.sessions.get(deviceId);
     return {
       qr: session?.latestQr || null,
-      issuedAt: session?.latestQrAt || null
+      issuedAt: session?.latestQrAt || null,
+      status: session?.status || "disconnected"
     };
   }
 
@@ -129,21 +144,41 @@ export class DeviceManager {
     const deviceId = id || `device_${randomUUID().slice(0, 8)}`;
     const deviceName = (name || "").trim() || deviceId;
     const created = await createDeviceRecord({ id: deviceId, name: deviceName, status: "disconnected" }, this.logger);
-    await this.startSession(created);
     await this.broadcast("device.created", created);
     return created;
   }
 
   async reconnectDevice(deviceId) {
     const session = this.sessions.get(deviceId);
-    if (!session) return null;
-    await session.stop();
-    this.sessions.delete(deviceId);
+    let sessionName = session?.name || "";
+    if (session) {
+      await session.stop();
+      this.sessions.delete(deviceId);
+    } else {
+      const deviceRecord = await getDeviceById(deviceId, this.logger);
+      sessionName = deviceRecord?.name || sessionName;
+    }
     await this.removeAuth(deviceId);
-    const device = await upsertDevice({ id: deviceId, name: session.name, status: "disconnected" }, this.logger);
-    const restarted = await this.startSession(device);
+    if (!sessionName) return null;
+    const device = await upsertDevice({ id: deviceId, name: sessionName, status: "disconnected" }, this.logger);
+    const restarted = await this.startSession(device, { qrRequested: true });
     await this.broadcast("device.reconnected", { deviceId });
     return restarted ? device : null;
+  }
+
+  async requestQr(deviceId) {
+    const session = this.sessions.get(deviceId);
+    if (session) {
+      if (session.ready) {
+        session.qrRequested = true;
+        return session;
+      }
+      await session.stop();
+      this.sessions.delete(deviceId);
+    }
+    const device = await getDeviceById(deviceId, this.logger);
+    if (!device) return null;
+    return this.startSession(device, { qrRequested: true });
   }
 
   async removeDevice(deviceId) {
@@ -172,6 +207,16 @@ export class DeviceManager {
       await this.onBroadcast(type, payload);
     } catch (err) {
       this.logger?.warn?.("[WS] Falha ao enviar evento", { type, error: err?.message });
+    }
+  }
+
+  async hasAuth(deviceId) {
+    const folder = path.join(AUTH_PATH, `device_${deviceId}`);
+    try {
+      const entries = await fs.readdir(folder);
+      return entries.length > 0;
+    } catch {
+      return false;
     }
   }
 }

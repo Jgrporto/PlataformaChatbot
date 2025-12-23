@@ -63,57 +63,56 @@ export class ChatbotConfigService {
     }
   }
 
-  async getCommands({ includeDisabled = true } = {}) {
+  async getCommands({ includeDisabled = true, deviceId = null } = {}) {
     await this.ensureFresh();
-    return includeDisabled ? this.cache.commands : this.cache.commands.filter((c) => c.enabled);
+    const filtered = this.filterByDevice(this.cache.commands, deviceId);
+    return includeDisabled ? filtered : filtered.filter((c) => c.enabled);
   }
 
-  async getQuickReplies({ includeDisabled = true } = {}) {
+  async getQuickReplies({ includeDisabled = true, deviceId = null } = {}) {
     await this.ensureFresh();
-    return includeDisabled
-      ? this.cache.quickReplies
-      : this.cache.quickReplies.filter((q) => q.enabled);
+    const filtered = this.filterByDevice(this.cache.quickReplies, deviceId);
+    return includeDisabled ? filtered : filtered.filter((q) => q.enabled);
   }
 
-  async getFlows({ includeDisabled = true } = {}) {
+  async getFlows({ includeDisabled = true, deviceId = null } = {}) {
     await this.ensureFresh();
-    return includeDisabled ? this.cache.flows : this.cache.flows.filter((f) => f.enabled);
+    const filtered = this.filterByDevice(this.cache.flows, deviceId);
+    return includeDisabled ? filtered : filtered.filter((f) => f.enabled);
   }
 
-  async getCommandIndex() {
-    const commands = await this.getCommands({ includeDisabled: true });
+  async getCommandIndex(deviceId = null) {
+    const commands = await this.getCommands({ includeDisabled: true, deviceId });
     const activeByToken = new Map();
     const tokensAll = [];
     for (const cmd of commands) {
       const token = normalizeToken(cmd.token);
       tokensAll.push(token);
-      if (cmd.enabled) activeByToken.set(token, { ...cmd, token });
+      if (cmd.enabled && !activeByToken.has(token)) activeByToken.set(token, { ...cmd, token });
     }
     return { items: commands, activeByToken, tokensAll };
   }
 
-  async findQuickReply(text) {
+  async findQuickReply(text, deviceId = null) {
     await this.ensureFresh();
     const value = (text || "").trim();
     if (!value) return null;
-    return (
-      this.cache.quickReplies.find((item) => item.enabled && matchesTrigger(value, item.trigger, item.matchType)) ||
-      null
-    );
+    const items = this.filterByDevice(this.cache.quickReplies, deviceId);
+    return items.find((item) => item.enabled && matchesTrigger(value, item.trigger, item.matchType)) || null;
   }
 
-  async findFlowTrigger(text) {
+  async findFlowTrigger(text, deviceId = null) {
     await this.ensureFresh();
     const value = (text || "").trim();
     if (!value) return null;
+    const items = this.filterByDevice(this.cache.flows, deviceId);
     return (
-      this.cache.flows.find(
+      items.find(
         (flow) =>
           flow.enabled &&
           Array.isArray(flow.triggers) &&
           flow.triggers.some((trigger) => matchesTrigger(value, trigger, "includes"))
-      ) ||
-      null
+      ) || null
     );
   }
 
@@ -166,5 +165,12 @@ export class ChatbotConfigService {
   async deleteFlow(id) {
     await deleteFlow(id, this.logger);
     await this.refresh();
+  }
+
+  filterByDevice(items, deviceId) {
+    if (!deviceId) return items;
+    const deviceItems = items.filter((item) => item.deviceId === deviceId);
+    const globalItems = items.filter((item) => !item.deviceId);
+    return [...deviceItems, ...globalItems];
   }
 }

@@ -15,8 +15,8 @@ function handleChatbotError(res, err) {
 }
 
 export function registerChatbotRoutes(app, { configService, requireAuth }) {
-  app.get("/api/chatbot/commands", requireAuth, async (_req, res) => {
-    const data = await configService.getCommands({ includeDisabled: true });
+  app.get("/api/chatbot/commands", requireAuth, async (req, res) => {
+    const data = await configService.getCommands({ includeDisabled: true, deviceId: req.query.deviceId || null });
     res.json(data);
   });
 
@@ -51,8 +51,11 @@ export function registerChatbotRoutes(app, { configService, requireAuth }) {
     }
   });
 
-  app.get("/api/chatbot/quick-replies", requireAuth, async (_req, res) => {
-    const data = await configService.getQuickReplies({ includeDisabled: true });
+  app.get("/api/chatbot/quick-replies", requireAuth, async (req, res) => {
+    const data = await configService.getQuickReplies({
+      includeDisabled: true,
+      deviceId: req.query.deviceId || null
+    });
     res.json(data);
   });
 
@@ -87,8 +90,8 @@ export function registerChatbotRoutes(app, { configService, requireAuth }) {
     }
   });
 
-  app.get("/api/chatbot/flows", requireAuth, async (_req, res) => {
-    const data = await configService.getFlows({ includeDisabled: true });
+  app.get("/api/chatbot/flows", requireAuth, async (req, res) => {
+    const data = await configService.getFlows({ includeDisabled: true, deviceId: req.query.deviceId || null });
     res.json(data);
   });
 

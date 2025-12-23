@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import http from "http";
 import axios from "axios";
@@ -11,6 +12,8 @@ import { registerDeviceRoutes } from "./api/devices.js";
 import { registerChatbotRoutes } from "./api/chatbot.js";
 import { registerInteractionRoutes } from "./api/interactions.js";
 import { registerTestRoutes } from "./api/tests.js";
+import { registerConversationRoutes } from "./api/conversations.js";
+import { registerFollowupRoutes } from "./api/followups.js";
 import { DeviceManager } from "./bot/deviceManager.js";
 import { FollowUpService } from "../services/followUpService.js";
 import { logInteraction, logMessage } from "./db/repositories/interactions.js";
@@ -30,7 +33,8 @@ const DEFAULT_SESSION_NAME = SESSION_NAMES[0] || "Venda 1";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
-const ADMIN_DIR = path.join(ROOT_DIR, "admin");
+const ADMIN_DIST = path.join(ROOT_DIR, "admin", "dist");
+const ADMIN_DIR = fs.existsSync(ADMIN_DIST) ? ADMIN_DIST : null;
 
 let lastActivity = Date.now();
 const touchActivity = () => {
@@ -109,7 +113,11 @@ async function start() {
     if (!session && rec?.sessionName) {
       session = Array.from(deviceManager.sessions.values()).find((s) => s.name === rec.sessionName) || null;
     }
-    if (!session) throw new Error("Sessao nao encontrada para follow-up");
+    if (!session) {
+      const err = new Error("Sessao nao encontrada para follow-up");
+      err.code = "SESSION_NOT_FOUND";
+      throw err;
+    }
     if (!session.ready) {
       const err = new Error(`Sessao ${session.name} ainda nao pronta`);
       err.code = "SESSION_NOT_READY";
@@ -163,6 +171,8 @@ async function start() {
   registerChatbotRoutes(app, { configService, requireAuth });
   registerInteractionRoutes(app, { requireAuth, logger });
   registerTestRoutes(app, { requireAuth, logger });
+  registerConversationRoutes(app, { requireAuth, logger, deviceManager });
+  registerFollowupRoutes(app, { requireAuth, followUpService });
 
   app.get("/api/commands", requireAuth, async (_req, res) => {
     const commands = await configService.getCommands({ includeDisabled: true });
@@ -174,10 +184,16 @@ async function start() {
     res.json(flows.map((flow) => flow.name));
   });
 
-  app.use("/admin", express.static(ADMIN_DIR));
-  app.get(/^\/admin\/.*$/, (_req, res) => {
-    res.sendFile(path.join(ADMIN_DIR, "index.html"));
-  });
+  if (ADMIN_DIR) {
+    app.use("/admin", express.static(ADMIN_DIR));
+    app.get(/^\/admin\/.*$/, (_req, res) => {
+      res.sendFile(path.join(ADMIN_DIR, "index.html"));
+    });
+  } else {
+    app.get(/^\/admin\/.*$/, (_req, res) => {
+      res.status(500).send("Painel nao compilado. Rode npm run build:admin.");
+    });
+  }
 
   app.get("/", (_req, res) => {
     res.status(200).json({ status: "ok" });

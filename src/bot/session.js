@@ -9,6 +9,7 @@ const AUTH_PATH = process.env.WWEB_AUTH_PATH || ".wwebjs_auth";
 export function createSession({
   deviceId,
   name,
+  qrRequested = false,
   configService,
   followUpService,
   logger,
@@ -46,17 +47,25 @@ export function createSession({
     processor,
     latestQr: "",
     latestQrAt: null,
+    qrRequested: !!qrRequested,
+    devicePhone: null,
     status: "disconnected",
     ready: false,
     lastActivity: null,
     lastError: null
   };
 
-  function updateStatus(status, errorText) {
+  function updateStatus(status, errorText, devicePhone) {
     session.status = status;
     session.lastError = errorText || null;
+    if (devicePhone) session.devicePhone = devicePhone;
     if (onStatus) {
-      onStatus({ status, lastError: session.lastError, lastActivity: session.lastActivity });
+      onStatus({
+        status,
+        lastError: session.lastError,
+        lastActivity: session.lastActivity,
+        devicePhone: session.devicePhone
+      });
     }
   }
 
@@ -67,8 +76,14 @@ export function createSession({
 
   client.on("qr", (qr) => {
     touchActivity();
+    if (!session.qrRequested) {
+      updateStatus("disconnected", "qr_not_requested");
+      logger?.info?.(`[${session.name}] QR gerado sem solicitacao; aguardando pedido.`);
+      return;
+    }
     session.latestQr = qr;
     session.latestQrAt = new Date().toISOString();
+    session.qrRequested = true;
     updateStatus("awaiting_qr", null);
     const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qr)}`;
     logger?.info?.(`[${session.name}] QR Code gerado: ${qrImgUrl}`);
@@ -78,7 +93,15 @@ export function createSession({
   client.on("ready", () => {
     touchActivity();
     session.ready = true;
-    updateStatus("connected", null);
+    session.latestQr = "";
+    session.latestQrAt = null;
+    const deviceDigits =
+      client?.info?.wid?.user ||
+      client?.info?.me?.user ||
+      client?.info?.wid?.user?.toString?.() ||
+      "";
+    const normalizedPhone = normalizeToE164BR(deviceDigits) || deviceDigits || null;
+    updateStatus("connected", null, normalizedPhone);
     logger?.info?.(`[${session.name}] Cliente WhatsApp conectado e pronto para receber mensagens.`);
     followUpService?.tick().catch((err) => logger?.error?.("[FollowUp] Tick inicial falhou", err));
   });

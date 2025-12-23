@@ -412,10 +412,11 @@ export function createMessageProcessor(deps = {}) {
     return appName;
   }
 
-  async function gerarTeste(clientePhoneDigits, clientName, appEscolhido = "", mac) {
+  async function gerarTeste(clientePhoneDigits, clientName, appEscolhido = "", mac, devicePhoneOverride) {
     const phoneDigits = cleanPhone(clientePhoneDigits);
     const whatsappE164 = normalizeToE164BR(phoneDigits);
     const appName = resolveAppName(appEscolhido);
+    const devicePhone = devicePhoneOverride || DEVICE_PHONE;
 
     if (!whatsappE164) {
       throw new Error(`WhatsApp invalido para E.164: "${clientePhoneDigits}"`);
@@ -423,7 +424,7 @@ export function createMessageProcessor(deps = {}) {
 
     return criarTesteNewBR({
       appName,
-      devicePhone: DEVICE_PHONE,
+      devicePhone,
       clientName: (clientName || "").trim() || "",
       clientWhatsappE164: whatsappE164,
       flowLabel: buildFlowLabel(appName, mac),
@@ -431,9 +432,9 @@ export function createMessageProcessor(deps = {}) {
     });
   }
 
-  async function gerarTesteSeguro(cliente, nome = "", appEscolhido = "", mac) {
+  async function gerarTesteSeguro(cliente, nome = "", appEscolhido = "", mac, devicePhoneOverride) {
     try {
-      return await gerarTeste(cliente, nome, appEscolhido, mac);
+      return await gerarTeste(cliente, nome, appEscolhido, mac, devicePhoneOverride);
     } catch (err) {
       logger.error("[Teste] Falha ao gerar teste", err);
       return null;
@@ -475,7 +476,7 @@ export function createMessageProcessor(deps = {}) {
 
   async function getCommandIndex() {
     if (deps.configService?.getCommandIndex) {
-      return deps.configService.getCommandIndex();
+      return deps.configService.getCommandIndex(deps.deviceId || null);
     }
     const items = DEFAULT_COMMANDS.map((cmd, index) => ({ id: index + 1, ...cmd }));
     const activeByToken = new Map();
@@ -490,7 +491,7 @@ export function createMessageProcessor(deps = {}) {
 
   async function responderComTeste(session, msg, phone, nome, profile, mac) {
     const { keyword, appName, display, code: defaultCode } = profile;
-    const reply = await gerarTesteSeguro(phone, nome, appName, mac);
+    const reply = await gerarTesteSeguro(phone, nome, appName, mac, session?.devicePhone);
     if (!reply) {
       await replyBot(session, msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
       return;
@@ -558,7 +559,7 @@ export function createMessageProcessor(deps = {}) {
   }
 
   async function iniciarTesteIbo(session, mac, msg, phone, nome) {
-    const reply = await gerarTesteSeguro(phone, nome, "IBO", mac);
+    const reply = await gerarTesteSeguro(phone, nome, "IBO", mac, session?.devicePhone);
     if (!reply) {
       await replyBot(session, msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
       return;
@@ -685,7 +686,7 @@ export function createMessageProcessor(deps = {}) {
       return;
     }
 
-    const reply = await gerarTesteSeguro(phone, nome, "CELULAR");
+    const reply = await gerarTesteSeguro(phone, nome, "CELULAR", undefined, session?.devicePhone);
     if (!reply) {
       await replyBot(session, msg, phone, nome, "So um momento! Vou chamar um dos atendentes.");
       return;
@@ -1084,7 +1085,7 @@ export function createMessageProcessor(deps = {}) {
   async function processCustomFlow(session, msg, phone, nome, textoLower) {
     if (!deps.configService) return false;
     const current = session.state.customFlows.get(phone);
-    const flows = await deps.configService.getFlows({ includeDisabled: false });
+    const flows = await deps.configService.getFlows({ includeDisabled: false, deviceId: deps.deviceId || null });
 
     if (current) {
       const flowDef = flows.find((flow) => flow.id === current.flowId || flow.name === current.flowName);
@@ -1121,7 +1122,7 @@ export function createMessageProcessor(deps = {}) {
       return false;
     }
 
-    const flowTrigger = await deps.configService.findFlowTrigger(textoLower);
+    const flowTrigger = await deps.configService.findFlowTrigger(textoLower, deps.deviceId || null);
     if (!flowTrigger) return false;
     if (!Array.isArray(flowTrigger.stages) || !flowTrigger.stages.length) return false;
     const firstStage = flowTrigger.stages[0];
@@ -1227,7 +1228,7 @@ export function createMessageProcessor(deps = {}) {
       return finish();
     }
 
-    const quickReply = await deps.configService?.findQuickReply(textoLower);
+    const quickReply = await deps.configService?.findQuickReply(textoLower, deps.deviceId || null);
     if (quickReply?.response) {
       await replyBot(session, msg, phone, nome, quickReply.response);
       return finish();

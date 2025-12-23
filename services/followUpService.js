@@ -70,6 +70,10 @@ export class FollowUpService {
     await writeJsonAtomic(this.storagePath, { records });
   }
 
+  list() {
+    return Array.from(this.byChatKey.values());
+  }
+
   schedule({ clientPhone, chatId, createdAt, clientName, sessionName, deviceId }) {
     const created = createdAt instanceof Date ? createdAt.toISOString() : createdAt;
     const rec = {
@@ -120,9 +124,44 @@ export class FollowUpService {
           });
           continue;
         }
+        if (err?.code === "SESSION_NOT_FOUND") {
+          this.logger?.warn("[FollowUp] Sessao nao encontrada; descartando follow-up", {
+            chatId: rec.chatId
+          });
+          this.byChatKey.delete(this.buildKey(rec));
+          await this.persist();
+          continue;
+        }
         this.logger?.error("[FollowUp] Falha ao enviar follow-up", err, { chatId: rec.chatId });
       }
     }
+  }
+
+  async updateRecord(id, updates = {}) {
+    if (!id) return null;
+    let target = null;
+    let oldKey = "";
+    for (const [key, rec] of this.byChatKey.entries()) {
+      if (rec.id === id) {
+        target = rec;
+        oldKey = key;
+        break;
+      }
+    }
+    if (!target) return null;
+
+    const next = {
+      ...target,
+      deviceId: updates.deviceId ?? target.deviceId ?? "",
+      sessionName: updates.sessionName ?? target.sessionName ?? this.defaultSessionName ?? ""
+    };
+    const nextKey = this.buildKey(next);
+    if (oldKey && oldKey !== nextKey) {
+      this.byChatKey.delete(oldKey);
+    }
+    this.byChatKey.set(nextKey, next);
+    await this.persist();
+    return next;
   }
 
   buildKey(rec) {

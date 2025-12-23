@@ -1,4 +1,5 @@
 import { getDb } from "../index.js";
+import { touchConversation, updateConversationFlow } from "./conversations.js";
 
 function buildRangeClause({ from, to }, params) {
   const clauses = [];
@@ -14,6 +15,11 @@ function buildRangeClause({ from, to }, params) {
 }
 
 export async function logInteraction(event, logger) {
+  const isGroup =
+    event?.contactType === "GRUPO" ||
+    (event?.chatId || "").endsWith("@g.us") ||
+    (event?.messageId || "").includes("@g.us");
+  if (isGroup) return;
   const db = await getDb(logger);
   await db.run(
     `insert into interactions (
@@ -34,9 +40,30 @@ export async function logInteraction(event, logger) {
     event.errorType || null,
     event.errorDetails || null
   );
+
+  const now = new Date().toISOString();
+  await touchConversation(
+    {
+      deviceId: event.deviceId || null,
+      phone: event.phone || null,
+      name: event.name || null,
+      lastMessage: event.content || null,
+      lastMessageAt: now
+    },
+    logger
+  );
+
+  if (event.flow || event.stage) {
+    await updateConversationFlow(
+      { deviceId: event.deviceId || null, phone: event.phone || null, flow: event.flow, stage: event.stage },
+      logger
+    );
+  }
 }
 
 export async function logMessage(message, logger) {
+  const isGroup = (message?.chatId || "").endsWith("@g.us");
+  if (isGroup) return;
   const db = await getDb(logger);
   await db.run(
     `insert into messages (
@@ -49,6 +76,17 @@ export async function logMessage(message, logger) {
     message.direction || null,
     message.messageType || null,
     message.content || null
+  );
+
+  const now = new Date().toISOString();
+  await touchConversation(
+    {
+      deviceId: message.deviceId || null,
+      phone: message.phone || null,
+      lastMessage: message.content || null,
+      lastMessageAt: now
+    },
+    logger
   );
 }
 
@@ -67,6 +105,8 @@ export async function listInteractions(filters = {}, logger) {
     const like = `%${filters.q}%`;
     params.push(like, like, like, like, like);
   }
+
+  clauses.push("(contact_type is null or contact_type != 'GRUPO')");
 
   clauses.push(...buildRangeClause(filters, params));
 

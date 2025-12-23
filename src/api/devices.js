@@ -12,13 +12,7 @@ async function buildQrImage(qrValue) {
 export function registerDeviceRoutes(app, { deviceManager, requireAuth }) {
   app.get("/api/devices", requireAuth, async (_req, res) => {
     const devices = await deviceManager.listDevices();
-    const enriched = await Promise.all(
-      devices.map(async (device) => ({
-        ...device,
-        qrImage: device.qr ? await buildQrImage(device.qr) : null
-      }))
-    );
-    res.json(enriched);
+    res.json(devices);
   });
 
   app.post("/api/devices", requireAuth, async (req, res) => {
@@ -31,9 +25,17 @@ export function registerDeviceRoutes(app, { deviceManager, requireAuth }) {
   });
 
   app.get("/api/devices/:id/qr", requireAuth, async (req, res) => {
-    const { qr, issuedAt } = deviceManager.getQrMeta(req.params.id);
+    const { qr, issuedAt, status } = deviceManager.getQrMeta(req.params.id);
     const imageUrl = qr ? await buildQrImage(qr) : null;
-    res.json({ qr: qr || null, imageUrl, issuedAt: issuedAt || null });
+    res.json({ qr: qr || null, imageUrl, issuedAt: issuedAt || null, status });
+  });
+
+  app.post("/api/devices/:id/qr", requireAuth, async (req, res) => {
+    const session = await deviceManager.requestQr(req.params.id);
+    if (!session) return res.status(404).send("Dispositivo nao encontrado.");
+    const { qr, issuedAt, status } = deviceManager.getQrMeta(req.params.id);
+    const imageUrl = qr ? await buildQrImage(qr) : null;
+    res.json({ qr: qr || null, imageUrl, issuedAt: issuedAt || null, status });
   });
 
   app.post("/api/devices/:id/reconnect", requireAuth, async (req, res) => {
