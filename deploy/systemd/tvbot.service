@@ -1,0 +1,17 @@
+﻿[Unit]
+Description=+TV Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/PlataformaChatbot
+ExecStart=/root/.nvm/versions/node/v20.19.6/bin/node /root/PlataformaChatbot/src/server.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=3200
+# EnvironmentFile=/etc/tvbot.env
+
+[Install]
+WantedBy=multi-user.target
