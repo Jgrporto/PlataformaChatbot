@@ -681,6 +681,11 @@ body {
   gap: 12px;
 }
 
+.command-list {
+  display: grid;
+  gap: 12px;
+}
+
 .reply-item {
   border: 1px solid var(--stroke);
   border-radius: var(--radius-md);
@@ -774,6 +779,111 @@ body {
   color: var(--muted);
   display: flex;
   gap: 6px;
+}
+
+.chatbot-modal {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1.2fr 0.8fr;
+  align-items: start;
+}
+
+.chatbot-form {
+  display: grid;
+  gap: 12px;
+}
+
+.vars-panel {
+  background: var(--panel-2);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.vars-title {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.vars-list {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.vars-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.vars-token {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(139, 92, 246, 0.2);
+  color: #e2e8f0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 11px;
+  margin-right: 6px;
+}
+
+.vars-example {
+  background: #0f1324;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.command-type {
+  display: grid;
+  gap: 8px;
+}
+
+.command-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.command-radio input {
+  accent-color: var(--accent);
+}
+
+.modal-tabs {
+  display: inline-flex;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  padding: 4px;
+}
+
+.modal-tab {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.modal-tab.active {
+  background: var(--gradient);
+  color: #ffffff;
 }
 
 .pagination {
@@ -1604,6 +1714,10 @@ body {
   }
 
   .flow-action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chatbot-modal {
     grid-template-columns: 1fr;
   }
 

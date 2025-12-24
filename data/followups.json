@@ -1,20 +1,11 @@
 {
   "records": [
     {
-      "id": "0c49cd3c-a3fd-43bf-99c0-28b90a61ad1f",
-      "clientPhone": "+5524999142097",
-      "chatId": "5524999142097@c.us",
-      "createdAt": "2025-12-23T22:56:39.786Z",
-      "clientName": "",
-      "sessionName": "Porto",
-      "deviceId": "device_c51062a4"
-    },
-    {
-      "id": "62252ae4-e560-4954-ac6e-b68a6065d523",
-      "clientPhone": "+5524999663511",
-      "chatId": "5524999663511@c.us",
-      "createdAt": "2025-12-23T23:00:29.186Z",
-      "clientName": "",
+      "id": "9a9e6edc-ce0a-459d-99e8-782bc6a24529",
+      "clientPhone": "+5524999157259",
+      "chatId": "5524999157259@c.us",
+      "createdAt": "2025-12-24T16:06:22.573Z",
+      "clientName": "Jh",
       "sessionName": "Porto",
       "deviceId": "device_c51062a4"
     }

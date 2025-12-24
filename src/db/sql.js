@@ -161,5 +161,24 @@ export const SQL_MIGRATIONS = [
       drop table chatbot_flows;
       alter table chatbot_flows_new rename to chatbot_flows;
     `
+  },
+  {
+    id: 4,
+    name: "chatbot_agent_commands",
+    sql: `
+      create table if not exists chatbot_agent_commands (
+        id integer primary key autoincrement,
+        trigger text not null,
+        response_template text not null,
+        command_type text not null default 'reply',
+        enabled integer not null default 1,
+        device_id text,
+        created_at text not null default (datetime('now')),
+        updated_at text not null default (datetime('now')),
+        unique(trigger, device_id)
+      );
+
+      create index if not exists idx_chatbot_agent_commands_device on chatbot_agent_commands(device_id);
+    `
   }
 ];

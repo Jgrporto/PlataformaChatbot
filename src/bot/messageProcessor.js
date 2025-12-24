@@ -139,6 +139,17 @@ export function createMessageProcessor(deps = {}) {
     );
   }
 
+  function renderQuickReplyTemplate(template, { name, phone }) {
+    const value = template || "";
+    if (!value) return value;
+    return value.replace(/\{#(nome|telefone)\}/gi, (match, keyRaw) => {
+      const key = (keyRaw || "").toLowerCase();
+      if (key === "nome") return (name || "").trim();
+      if (key === "telefone") return (phone || "").trim();
+      return match;
+    });
+  }
+
   function findValidPhoneDigits(candidates = []) {
     for (const candidate of candidates) {
       const digits = extractPhoneFromText(candidate);
@@ -993,6 +1004,42 @@ export function createMessageProcessor(deps = {}) {
       return { ctx, content, errorForLog };
     }
 
+    if (deps.commandsService && corpo.startsWith("#")) {
+      try {
+        const result = await deps.commandsService.handleAgentCommand({
+          text: corpo,
+          deviceId: deps.deviceId || null,
+          devicePhone: session?.devicePhone || "",
+          phone,
+          phoneE164,
+          name: nome
+        });
+        if (result?.handled) {
+          if (result.response) {
+            await replyBot(session, msg, phone, nome, result.response);
+          }
+          if (result?.scheduleFollowUp) {
+            const chatId = resolveChatIdConversa(msg);
+            const phoneE164Final = normalizeToE164BR(phone) || phone;
+            if (chatId && phoneE164Final) {
+              deps.followUpService?.schedule({
+                clientPhone: phoneE164Final,
+                chatId,
+                createdAt: new Date().toISOString(),
+                clientName: nome,
+                sessionName: session?.name || "",
+                deviceId: deps.deviceId || null
+              });
+            }
+          }
+          return { ctx, content, errorForLog };
+        }
+      } catch (err) {
+        errorForLog = { type: "AGENT_COMMAND_ERROR", details: err?.message || "Falha no comando #", err };
+        return { ctx, content, errorForLog };
+      }
+    }
+
     const state = session.state;
 
     if (isInstrucaoMensagem(corpo)) {
@@ -1230,7 +1277,11 @@ export function createMessageProcessor(deps = {}) {
 
     const quickReply = await deps.configService?.findQuickReply(textoLower, deps.deviceId || null);
     if (quickReply?.response) {
-      await replyBot(session, msg, phone, nome, quickReply.response);
+      const rendered = renderQuickReplyTemplate(quickReply.response, {
+        name: nome,
+        phone: phoneE164 || phone || ""
+      });
+      await replyBot(session, msg, phone, nome, rendered);
       return finish();
     }
 

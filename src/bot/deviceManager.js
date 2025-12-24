@@ -19,9 +19,19 @@ const SESSION_NAMES = (process.env.SESSION_NAMES || "Venda 1")
   .filter(Boolean);
 
 export class DeviceManager {
-  constructor({ logger, configService, followUpService, onInteraction, onMessage, onBroadcast, onActivity } = {}) {
+  constructor({
+    logger,
+    configService,
+    commandsService,
+    followUpService,
+    onInteraction,
+    onMessage,
+    onBroadcast,
+    onActivity
+  } = {}) {
     this.logger = logger;
     this.configService = configService;
+    this.commandsService = commandsService;
     this.followUpService = followUpService;
     this.onInteraction = onInteraction;
     this.onMessage = onMessage;
@@ -60,6 +70,7 @@ export class DeviceManager {
       name: device.name,
       qrRequested,
       configService: this.configService,
+      commandsService: this.commandsService,
       followUpService: this.followUpService,
       logger: this.logger,
       onInteraction: this.onInteraction,

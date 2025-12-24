@@ -15,7 +15,12 @@ const VIEWS = [
   {
     id: "chatbot",
     title: "Chatbot",
-    subtitle: "Comandos, respostas rapidas e fluxos por dispositivo."
+    subtitle: "Comandos # e respostas rapidas por dispositivo."
+  },
+  {
+    id: "flows",
+    title: "Flows",
+    subtitle: "Em breve: modelos e editor de fluxos."
   },
   {
     id: "conversations",
@@ -210,12 +215,13 @@ function App() {
   const wsReconnectRef = useRef(null);
 
   const [chatbotDeviceId, setChatbotDeviceId] = useState("");
-  const [commands, setCommands] = useState([]);
+  const [agentCommands, setAgentCommands] = useState([]);
   const [replies, setReplies] = useState([]);
   const [flows, setFlows] = useState([]);
-  const [newCommand, setNewCommand] = useState({
-    token: "",
-    flow: "",
+  const [newAgentCommand, setNewAgentCommand] = useState({
+    trigger: "",
+    responseTemplate: "",
+    commandType: "test",
     enabled: true,
     deviceId: ""
   });
@@ -239,8 +245,11 @@ function App() {
   const [chatbotMatchFilter, setChatbotMatchFilter] = useState("");
   const [replyPage, setReplyPage] = useState(1);
   const [expandedReplyId, setExpandedReplyId] = useState(null);
-  const [replyModalOpen, setReplyModalOpen] = useState(false);
+  const [expandedCommandId, setExpandedCommandId] = useState(null);
+  const [chatbotModalOpen, setChatbotModalOpen] = useState(false);
+  const [chatbotModalMode, setChatbotModalMode] = useState("command");
   const [editingReplyId, setEditingReplyId] = useState(null);
+  const [editingCommandId, setEditingCommandId] = useState(null);
   const [flowEditorOpen, setFlowEditorOpen] = useState(false);
   const [flowTriggerInput, setFlowTriggerInput] = useState("");
   const [flowJsonOpen, setFlowJsonOpen] = useState(false);
@@ -309,6 +318,12 @@ function App() {
     const active = replies.filter((reply) => reply.enabled).length;
     return { total, active, inactive: total - active };
   }, [replies]);
+  const commandStats = useMemo(() => {
+    const total = agentCommands.length;
+    const active = agentCommands.filter((command) => command.enabled).length;
+    const tests = agentCommands.filter((command) => command.commandType === "test").length;
+    return { total, active, inactive: total - active, tests };
+  }, [agentCommands]);
   const filteredReplies = useMemo(() => {
     let data = replies;
     if (chatbotMatchFilter) {
@@ -462,14 +477,20 @@ function App() {
     const params = new URLSearchParams();
     if (chatbotDeviceId) params.set("deviceId", chatbotDeviceId);
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    const [cmd, rep, fl] = await Promise.all([
-      api(`/api/chatbot/commands${suffix}`),
-      api(`/api/chatbot/quick-replies${suffix}`),
-      api(`/api/chatbot/flows${suffix}`)
+    const [cmd, rep] = await Promise.all([
+      api(`/api/chatbot/agent-commands${suffix}`),
+      api(`/api/chatbot/quick-replies${suffix}`)
     ]);
-    setCommands(cmd || []);
+    setAgentCommands(cmd || []);
     setReplies(rep || []);
-    setFlows(fl || []);
+  }, [chatbotDeviceId]);
+
+  const loadFlows = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (chatbotDeviceId) params.set("deviceId", chatbotDeviceId);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const data = await api(`/api/chatbot/flows${suffix}`);
+    setFlows(data || []);
   }, [chatbotDeviceId]);
 
   const loadConversations = useCallback(async () => {
@@ -532,6 +553,7 @@ function App() {
       loadInteractions().catch(() => {});
     }
     if (activeView === "chatbot") loadChatbot().catch(() => {});
+    if (activeView === "flows") loadFlows().catch(() => {});
     if (activeView === "conversations") loadConversations().catch(() => {});
     if (activeView === "tests") loadTests().catch(() => {});
     if (activeView === "followups") loadFollowups().catch(() => {});
@@ -540,6 +562,7 @@ function App() {
     activeView,
     loadDevices,
     loadChatbot,
+    loadFlows,
     loadConversations,
     loadTests,
     loadFollowups,
@@ -558,6 +581,7 @@ function App() {
       }
       if (activeView === "devices") loadDevices().catch(() => {});
       if (activeView === "chatbot") loadChatbot().catch(() => {});
+      if (activeView === "flows") loadFlows().catch(() => {});
       if (activeView === "conversations") loadConversations().catch(() => {});
       if (activeView === "tests") loadTests().catch(() => {});
       if (activeView === "followups") loadFollowups().catch(() => {});
@@ -568,6 +592,7 @@ function App() {
     activeView,
     loadDevices,
     loadChatbot,
+    loadFlows,
     loadConversations,
     loadTests,
     loadFollowups,
@@ -617,13 +642,7 @@ function App() {
   }, [selectedFlow]);
 
   useEffect(() => {
-    if (!newCommand.flow && flows.length) {
-      setNewCommand((prev) => ({ ...prev, flow: flows[0].name }));
-    }
-  }, [flows, newCommand.flow]);
-
-  useEffect(() => {
-    setNewCommand((prev) => ({ ...prev, deviceId: chatbotDeviceId || "" }));
+    setNewAgentCommand((prev) => ({ ...prev, deviceId: chatbotDeviceId || "" }));
     setNewReply((prev) => ({ ...prev, deviceId: chatbotDeviceId || "" }));
     setNewFlow((prev) => ({ ...prev, deviceId: chatbotDeviceId || "" }));
   }, [chatbotDeviceId]);
@@ -631,6 +650,7 @@ function App() {
   useEffect(() => {
     setReplyPage(1);
     setExpandedReplyId(null);
+    setExpandedCommandId(null);
   }, [chatbotQuery, chatbotSearchMode, chatbotMatchFilter, chatbotDeviceId]);
 
   useEffect(() => {
@@ -842,14 +862,6 @@ function App() {
     }
   };
 
-  const handleCommandChange = (id, field, value) => {
-    setCommands((prev) => prev.map((cmd) => (cmd.id === id ? { ...cmd, [field]: value } : cmd)));
-  };
-
-  const handleReplyChange = (id, field, value) => {
-    setReplies((prev) => prev.map((rep) => (rep.id === id ? { ...rep, [field]: value } : rep)));
-  };
-
   const resetReplyForm = (overrides = {}) => {
     setNewReply({
       trigger: "",
@@ -862,6 +874,8 @@ function App() {
   };
 
   const openReplyModal = (reply = null) => {
+    setChatbotModalMode("reply");
+    setEditingCommandId(null);
     if (reply) {
       setEditingReplyId(reply.id);
       resetReplyForm({
@@ -875,12 +889,15 @@ function App() {
       setEditingReplyId(null);
       resetReplyForm();
     }
-    setReplyModalOpen(true);
+    setChatbotModalOpen(true);
   };
 
-  const closeReplyModal = () => {
-    setReplyModalOpen(false);
-    setEditingReplyId(null);
+  const openChatbotModal = () => {
+    if (chatbotModalMode === "reply") {
+      openReplyModal();
+      return;
+    }
+    openCommandModal();
   };
 
   const submitReplyForm = async () => {
@@ -888,8 +905,7 @@ function App() {
       ? await saveReply({ id: editingReplyId, ...newReply })
       : await createReply();
     if (success) {
-      setReplyModalOpen(false);
-      setEditingReplyId(null);
+      closeChatbotModal();
     }
   };
 
@@ -943,55 +959,128 @@ function App() {
     }
   };
 
-  const createCommand = async () => {
-    const token = newCommand.token.trim();
-    const flow = newCommand.flow;
-    if (!token || !flow) {
-      alert("Token e fluxo sao obrigatorios.");
-      return;
+  const openCommandModal = (command = null) => {
+    setChatbotModalMode("command");
+    setEditingReplyId(null);
+    if (command) {
+      setEditingCommandId(command.id);
+      setNewAgentCommand({
+        trigger: command.trigger || "",
+        responseTemplate: command.responseTemplate || "",
+        commandType: command.commandType || "reply",
+        enabled: !!command.enabled,
+        deviceId: command.deviceId || ""
+      });
+    } else {
+      setEditingCommandId(null);
+      setNewAgentCommand({
+        trigger: "",
+        responseTemplate: "",
+        commandType: "test",
+        enabled: true,
+        deviceId: chatbotDeviceId || ""
+      });
+    }
+    setChatbotModalOpen(true);
+  };
+
+  const closeChatbotModal = () => {
+    setChatbotModalOpen(false);
+    setEditingCommandId(null);
+    setEditingReplyId(null);
+  };
+
+  const createAgentCommand = async () => {
+    const trigger = newAgentCommand.trigger.trim();
+    const responseTemplate = newAgentCommand.responseTemplate.trim();
+    if (!trigger || !trigger.startsWith("#") || trigger.length <= 1) {
+      alert("A frase precisa iniciar com #.");
+      return false;
+    }
+    if (!responseTemplate) {
+      alert("Resposta obrigatoria.");
+      return false;
     }
     try {
-      await api("/api/chatbot/commands", {
+      await api("/api/chatbot/agent-commands", {
         method: "POST",
         body: JSON.stringify({
-          token,
-          flow,
-          enabled: newCommand.enabled,
-          deviceId: newCommand.deviceId || null
+          trigger,
+          responseTemplate,
+          commandType: newAgentCommand.commandType,
+          enabled: newAgentCommand.enabled,
+          deviceId: newAgentCommand.deviceId || null
         })
       });
-      setNewCommand((prev) => ({ ...prev, token: "" }));
+      setNewAgentCommand((prev) => ({ ...prev, trigger: "", responseTemplate: "" }));
       await loadChatbot();
+      return true;
     } catch (err) {
-      alert(err.message || "Erro ao criar comando.");
+      alert(err.message || "Erro ao criar comando #.");
+      return false;
     }
   };
 
-  const saveCommand = async (command) => {
+  const saveAgentCommand = async (command) => {
     try {
-      await api(`/api/chatbot/commands/${command.id}`, {
+      await api(`/api/chatbot/agent-commands/${command.id}`, {
         method: "PUT",
         body: JSON.stringify({
-          token: command.token,
-          flow: command.flow,
+          trigger: command.trigger,
+          responseTemplate: command.responseTemplate,
+          commandType: command.commandType,
           enabled: command.enabled,
           deviceId: command.deviceId || null
         })
       });
       await loadChatbot();
+      return true;
     } catch (err) {
-      alert(err.message || "Erro ao atualizar comando.");
+      alert(err.message || "Erro ao atualizar comando #.");
+      return false;
     }
   };
 
-  const deleteCommand = async (id) => {
-    if (!confirm("Excluir comando?")) return;
+  const submitCommandForm = async () => {
+    const payload = {
+      id: editingCommandId,
+      trigger: newAgentCommand.trigger.trim(),
+      responseTemplate: newAgentCommand.responseTemplate.trim(),
+      commandType: newAgentCommand.commandType,
+      enabled: newAgentCommand.enabled,
+      deviceId: newAgentCommand.deviceId || null
+    };
+
+    if (!payload.trigger || !payload.trigger.startsWith("#") || payload.trigger.length <= 1) {
+      alert("A frase precisa iniciar com #.");
+      return;
+    }
+    if (!payload.responseTemplate) {
+      alert("Resposta obrigatoria.");
+      return;
+    }
+
+    let success = false;
+    if (editingCommandId) {
+      success = await saveAgentCommand(payload);
+    } else {
+      success = await createAgentCommand();
+    }
+    if (success) closeChatbotModal();
+  };
+
+  const deleteAgentCommand = async (id) => {
+    if (!confirm("Excluir comando #?")) return;
     try {
-      await api(`/api/chatbot/commands/${id}`, { method: "DELETE" });
+      await api(`/api/chatbot/agent-commands/${id}`, { method: "DELETE" });
       await loadChatbot();
     } catch (err) {
-      alert(err.message || "Erro ao excluir comando.");
+      alert(err.message || "Erro ao excluir comando #.");
     }
+  };
+
+  const toggleAgentCommandEnabled = async (command) => {
+    await saveAgentCommand({ ...command, enabled: !command.enabled });
   };
 
   const createReply = async () => {
@@ -1457,14 +1546,14 @@ function App() {
           <div className="chatbot-header">
             <div>
               <h3>Respostas Automaticas</h3>
-              <div className="device-meta">Configure palavras-chave, respostas e fluxos por dispositivo.</div>
+              <div className="device-meta">Configure comandos # e respostas rapidas por dispositivo.</div>
             </div>
             <div className="chatbot-actions">
               <button className="secondary" onClick={() => loadChatbot().catch(() => {})}>
                 Atualizar
               </button>
-              <button className="primary" onClick={() => openReplyModal()}>
-                Criar resposta
+              <button className="primary" onClick={openChatbotModal}>
+                Criar Resposta
               </button>
             </div>
           </div>
@@ -1472,7 +1561,21 @@ function App() {
           <div className="summary-grid">
             <div className="summary-card">
               <div>
-                <div className="summary-label">Respostas</div>
+                <div className="summary-label">Comandos #</div>
+                <div className="summary-value">{commandStats.total}</div>
+              </div>
+              <div className="summary-icon">#</div>
+            </div>
+            <div className="summary-card">
+              <div>
+                <div className="summary-label">Comandos teste</div>
+                <div className="summary-value">{commandStats.tests}</div>
+              </div>
+              <div className="summary-icon">T</div>
+            </div>
+            <div className="summary-card">
+              <div>
+                <div className="summary-label">Respostas rapidas</div>
                 <div className="summary-value">{replyStats.total}</div>
               </div>
               <div className="summary-icon">R</div>
@@ -1484,35 +1587,81 @@ function App() {
               </div>
               <div className="summary-icon">A</div>
             </div>
-            <div className="summary-card">
-              <div>
-                <div className="summary-label">Respostas inativas</div>
-                <div className="summary-value">{replyStats.inactive}</div>
-              </div>
-              <div className="summary-icon">I</div>
-            </div>
           </div>
 
-          <div className="info-grid">
-            <div className="info-card">
-              <div className="info-title">Dica</div>
-              <div className="info-text">
-                Na conversa com o cliente, se voce digitar !palavra-chave do celular do bot, ele
-                responde como se o cliente tivesse acionado a palavra-chave.
-              </div>
+          <div className="card">
+            <div className="card-head">
+              <h3>Comandos #</h3>
+              <span className="badge">{agentCommands.length}</span>
             </div>
-            <div className="info-card accent">
-              <div className="info-title">Testar Chatbot (Beta)</div>
-              <div className="info-text">
-                Teste as respostas do chatbot em um ambiente simulado antes de ativar para os clientes.
-              </div>
-            </div>
-            <div className="info-card accent-alt">
-              <div className="info-title">Telegram (Beta)</div>
-              <div className="info-text">
-                Agora voce pode enviar mensagens usando um bot do Telegram. Configure na pagina
-                Dispositivos.
-              </div>
+            <div className="command-list">
+              {agentCommands.length === 0 ? (
+                <div className="empty-state">Nenhum comando # cadastrado.</div>
+              ) : (
+                agentCommands.map((command) => {
+                  const preview =
+                    command.responseTemplate && command.responseTemplate.length > 120
+                      ? `${command.responseTemplate.slice(0, 117)}...`
+                      : command.responseTemplate || "-";
+                  const deviceLabel = command.deviceId
+                    ? deviceLabelMap.get(command.deviceId) || command.deviceId
+                    : "Todos";
+                  const isExpanded = expandedCommandId === command.id;
+                  const typeLabel = command.commandType === "test" ? "Teste NewBR" : "Resposta normal";
+                  return (
+                    <div key={command.id} className={`reply-item ${isExpanded ? "expanded" : ""}`}>
+                      <div className="reply-main">
+                        <div className="reply-left">
+                          <div className="reply-icon">#</div>
+                          <div>
+                            <div className="reply-label">{typeLabel}</div>
+                            <div className="reply-title">{command.trigger || "-"}</div>
+                            <div className="reply-meta">{preview}</div>
+                          </div>
+                        </div>
+                        <div className="reply-actions">
+                          <span className={`pill ${command.enabled ? "success" : "danger"}`}>
+                            {command.enabled ? "Ativo" : "Inativo"}
+                          </span>
+                          <button
+                            className="icon"
+                            onClick={() =>
+                              setExpandedCommandId(isExpanded ? null : command.id)
+                            }
+                          >
+                            {isExpanded ? "Fechar" : "Abrir"}
+                          </button>
+                        </div>
+                      </div>
+                      {isExpanded ? (
+                        <div className="reply-expanded">
+                          <div className="reply-detail">
+                            <div className="reply-detail-title">Resposta</div>
+                            <div className="reply-detail-text">{command.responseTemplate || "-"}</div>
+                          </div>
+                          <div className="reply-detail-row">
+                            <span>Device:</span> {deviceLabel}
+                          </div>
+                          <div className="reply-detail-row">
+                            <span>Tipo:</span> {typeLabel}
+                          </div>
+                          <div className="form-row">
+                            <button className="secondary" onClick={() => openCommandModal(command)}>
+                              Editar
+                            </button>
+                            <button className="secondary" onClick={() => toggleAgentCommandEnabled(command)}>
+                              {command.enabled ? "Desativar" : "Ativar"}
+                            </button>
+                            <button className="danger" onClick={() => deleteAgentCommand(command.id)}>
+                              Excluir
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
 
@@ -1566,7 +1715,7 @@ function App() {
 
           <div className="card">
             <div className="card-head">
-              <h3>Respostas</h3>
+              <h3>Respostas rapidas</h3>
               <span className="badge">{filteredReplies.length}</span>
             </div>
             <div className="reply-list">
@@ -1650,52 +1799,15 @@ function App() {
             ) : null}
           </div>
 
-          <div className="card flow-list-card">
+        </section>
+
+        <section className={`view ${activeView === "flows" ? "active" : ""}`}>
+          <div className="card">
             <div className="card-head">
-              <h3>Fluxos</h3>
-              <div className="chatbot-actions">
-                <button className="secondary" onClick={() => setFlowCreateOpen(true)}>
-                  Criar fluxo
-                </button>
-              </div>
+              <h3>Flows (em breve)</h3>
             </div>
-            <div className="flow-list-grid">
-              {flows.length === 0 ? (
-                <div className="empty-state">Nenhum fluxo cadastrado.</div>
-              ) : (
-                flows.map((flow) => {
-                  const deviceLabel = flow.deviceId
-                    ? deviceLabelMap.get(flow.deviceId) || flow.deviceId
-                    : "Global";
-                  const triggerCount = Array.isArray(flow.triggers) ? flow.triggers.length : 0;
-                  const stageCount = Array.isArray(flow.stages) ? flow.stages.length : 0;
-                  return (
-                    <div key={flow.id} className="flow-card">
-                      <div className="flow-card-head">
-                        <div>
-                          <div className="flow-title">{flow.name}</div>
-                          <div className="device-meta">{deviceLabel}</div>
-                        </div>
-                        <span className={`pill ${flow.enabled ? "success" : "danger"}`}>
-                          {flow.enabled ? "Ativo" : "Inativo"}
-                        </span>
-                      </div>
-                      <div className="flow-card-meta">
-                        <div>Gatilhos: {triggerCount}</div>
-                        <div>Etapas: {stageCount}</div>
-                      </div>
-                      <div className="form-row">
-                        <button className="secondary" onClick={() => openFlowEditor(flow)}>
-                          Editar fluxo
-                        </button>
-                        <button className="danger" onClick={() => deleteFlow(flow.id)}>
-                          Excluir
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
+            <div className="empty-state">
+              Aguardando o modelo para montar a nova aba de flows.
             </div>
           </div>
         </section>
@@ -2244,73 +2356,225 @@ function App() {
         </div>
       ) : null}
 
-      {replyModalOpen ? (
+      {chatbotModalOpen ? (
         <div
           className="modal"
           onClick={(event) => {
-            if (event.target.classList.contains("modal")) closeReplyModal();
+            if (event.target.classList.contains("modal")) closeChatbotModal();
           }}
         >
           <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
             <div className="modal-head">
-              <h3>{editingReplyId ? "Editar resposta" : "Criar resposta"}</h3>
-              <button className="icon" onClick={closeReplyModal}>
+              <div className="modal-tabs">
+                <button
+                  className={`modal-tab ${chatbotModalMode === "command" ? "active" : ""}`}
+                  onClick={() => setChatbotModalMode("command")}
+                >
+                  Comando #
+                </button>
+                <button
+                  className={`modal-tab ${chatbotModalMode === "reply" ? "active" : ""}`}
+                  onClick={() => setChatbotModalMode("reply")}
+                >
+                  Resposta rapida
+                </button>
+              </div>
+              <button className="icon" onClick={closeChatbotModal}>
                 X
               </button>
             </div>
-            <div className="modal-body">
-              <div className="form-row">
-                <select
-                  className="select"
-                  value={newReply.deviceId}
-                  onChange={(event) => setNewReply((prev) => ({ ...prev, deviceId: event.target.value }))}
-                >
-                  <option value="">Todos os Dispositivos</option>
-                  {deviceOptions.map((device) => (
-                    <option key={device.value} value={device.value}>
-                      {device.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="select"
-                  value={newReply.matchType}
-                  onChange={(event) => setNewReply((prev) => ({ ...prev, matchType: event.target.value }))}
-                >
-                  <option value="exact">Frase Exata</option>
-                  <option value="list">Lista</option>
-                  <option value="includes">Contem</option>
-                  <option value="starts_with">Comeca</option>
-                </select>
+            <div className="modal-body chatbot-modal">
+              <div className="chatbot-form">
+                {chatbotModalMode === "command" ? (
+                  <>
+                    <div className="form-row">
+                      <select
+                        className="select"
+                        value={newAgentCommand.deviceId}
+                        onChange={(event) =>
+                          setNewAgentCommand((prev) => ({ ...prev, deviceId: event.target.value }))
+                        }
+                      >
+                        <option value="">Todos os Dispositivos</option>
+                        {deviceOptions.map((device) => (
+                          <option key={device.value} value={device.value}>
+                            {device.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <input
+                      className="input"
+                      placeholder="#frase exata enviada pelo agente"
+                      value={newAgentCommand.trigger}
+                      onChange={(event) =>
+                        setNewAgentCommand((prev) => ({ ...prev, trigger: event.target.value }))
+                      }
+                    />
+                    <div className="command-type">
+                      <label className="command-radio">
+                        <input
+                          type="radio"
+                          name="commandType"
+                          value="test"
+                          checked={newAgentCommand.commandType === "test"}
+                          onChange={(event) =>
+                            setNewAgentCommand((prev) => ({
+                              ...prev,
+                              commandType: event.target.value
+                            }))
+                          }
+                        />
+                        <span>Gera teste no NewBR</span>
+                      </label>
+                      <label className="command-radio">
+                        <input
+                          type="radio"
+                          name="commandType"
+                          value="reply"
+                          checked={newAgentCommand.commandType === "reply"}
+                          onChange={(event) =>
+                            setNewAgentCommand((prev) => ({
+                              ...prev,
+                              commandType: event.target.value
+                            }))
+                          }
+                        />
+                        <span>Apenas resposta normal</span>
+                      </label>
+                    </div>
+                    <textarea
+                      className="textarea"
+                      placeholder="Resposta"
+                      value={newAgentCommand.responseTemplate}
+                      onChange={(event) =>
+                        setNewAgentCommand((prev) => ({
+                          ...prev,
+                          responseTemplate: event.target.value
+                        }))
+                      }
+                    />
+                    <label className="flow-switch inline">
+                      <span>Ativo</span>
+                      <input
+                        type="checkbox"
+                        checked={newAgentCommand.enabled}
+                        onChange={(event) =>
+                          setNewAgentCommand((prev) => ({
+                            ...prev,
+                            enabled: event.target.checked
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="form-row">
+                      <button className="secondary" onClick={closeChatbotModal}>
+                        Cancelar
+                      </button>
+                      <button className="primary" onClick={submitCommandForm}>
+                        {editingCommandId ? "Salvar" : "Criar"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="form-row">
+                      <select
+                        className="select"
+                        value={newReply.deviceId}
+                        onChange={(event) =>
+                          setNewReply((prev) => ({ ...prev, deviceId: event.target.value }))
+                        }
+                      >
+                        <option value="">Todos os Dispositivos</option>
+                        {deviceOptions.map((device) => (
+                          <option key={device.value} value={device.value}>
+                            {device.label}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="select"
+                        value={newReply.matchType}
+                        onChange={(event) =>
+                          setNewReply((prev) => ({ ...prev, matchType: event.target.value }))
+                        }
+                      >
+                        <option value="exact">Frase Exata</option>
+                        <option value="list">Lista</option>
+                        <option value="includes">Contem</option>
+                        <option value="starts_with">Comeca</option>
+                      </select>
+                    </div>
+                    <input
+                      className="input"
+                      placeholder="Palavra-chave"
+                      value={newReply.trigger}
+                      onChange={(event) =>
+                        setNewReply((prev) => ({ ...prev, trigger: event.target.value }))
+                      }
+                    />
+                    <textarea
+                      className="textarea"
+                      placeholder="Resposta"
+                      value={newReply.response}
+                      onChange={(event) =>
+                        setNewReply((prev) => ({ ...prev, response: event.target.value }))
+                      }
+                    />
+                    <label className="flow-switch inline">
+                      <span>Ativa</span>
+                      <input
+                        type="checkbox"
+                        checked={newReply.enabled}
+                        onChange={(event) =>
+                          setNewReply((prev) => ({ ...prev, enabled: event.target.checked }))
+                        }
+                      />
+                    </label>
+                    <div className="form-row">
+                      <button className="secondary" onClick={closeChatbotModal}>
+                        Cancelar
+                      </button>
+                      <button className="primary" onClick={submitReplyForm}>
+                        {editingReplyId ? "Salvar" : "Criar"}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
-              <input
-                className="input"
-                placeholder="Palavra-chave"
-                value={newReply.trigger}
-                onChange={(event) => setNewReply((prev) => ({ ...prev, trigger: event.target.value }))}
-              />
-              <textarea
-                className="textarea"
-                placeholder="Resposta"
-                value={newReply.response}
-                onChange={(event) => setNewReply((prev) => ({ ...prev, response: event.target.value }))}
-              />
-              <label className="flow-switch inline">
-                <span>Ativa</span>
-                <input
-                  type="checkbox"
-                  checked={newReply.enabled}
-                  onChange={(event) => setNewReply((prev) => ({ ...prev, enabled: event.target.checked }))}
-                />
-              </label>
-              <div className="form-row">
-                <button className="secondary" onClick={closeReplyModal}>
-                  Cancelar
-                </button>
-                <button className="primary" onClick={submitReplyForm}>
-                  {editingReplyId ? "Salvar" : "Criar"}
-                </button>
-              </div>
+              <aside className="vars-panel">
+                <div className="vars-title">Variaveis disponiveis</div>
+                <div className="vars-list">
+                  <div>
+                    <span className="vars-token">{"{#nome}"}</span> Nome do contato ou WhatsApp
+                  </div>
+                  <div>
+                    <span className="vars-token">{"{#telefone}"}</span> Telefone do contato
+                  </div>
+                  <div>
+                    <span className="vars-token">{"{#usuario}"}</span> Usuario do teste NewBR
+                  </div>
+                  <div>
+                    <span className="vars-token">{"{#senha}"}</span> Senha do teste NewBR
+                  </div>
+                  <div>
+                    <span className="vars-token">{"{#http1}"}</span> Primeiro link HTTP
+                  </div>
+                  <div>
+                    <span className="vars-token">{"{#http2}"}</span> Segundo link HTTP
+                  </div>
+                </div>
+                <div className="vars-note">
+                  Variaveis de teste funcionam apenas quando o comando # esta marcado como NewBR.
+                </div>
+                <div className="vars-title">Modelo de resposta</div>
+                <pre className="vars-example">{`LAZER PLAY
+
+Cod: br99
+Usuario: {#usuario}
+Senha: {#senha}`}</pre>
+              </aside>
             </div>
           </div>
         </div>

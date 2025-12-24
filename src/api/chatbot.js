@@ -14,7 +14,7 @@ function handleChatbotError(res, err) {
   return res.status(500).send(message);
 }
 
-export function registerChatbotRoutes(app, { configService, requireAuth }) {
+export function registerChatbotRoutes(app, { configService, commandsService, requireAuth }) {
   app.get("/api/chatbot/commands", requireAuth, async (req, res) => {
     const data = await configService.getCommands({ includeDisabled: true, deviceId: req.query.deviceId || null });
     res.json(data);
@@ -120,6 +120,49 @@ export function registerChatbotRoutes(app, { configService, requireAuth }) {
     if (!id) return res.status(400).send("ID invalido.");
     try {
       await configService.deleteFlow(id);
+      res.status(204).end();
+    } catch (err) {
+      handleChatbotError(res, err);
+    }
+  });
+
+  app.get("/api/chatbot/agent-commands", requireAuth, async (req, res) => {
+    try {
+      const data = await commandsService.list({
+        includeDisabled: true,
+        deviceId: req.query.deviceId || null
+      });
+      res.json(data);
+    } catch (err) {
+      handleChatbotError(res, err);
+    }
+  });
+
+  app.post("/api/chatbot/agent-commands", requireAuth, async (req, res) => {
+    try {
+      const created = await commandsService.create(req.body || {});
+      res.status(201).json(created);
+    } catch (err) {
+      handleChatbotError(res, err);
+    }
+  });
+
+  app.put("/api/chatbot/agent-commands/:id", requireAuth, async (req, res) => {
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).send("ID invalido.");
+    try {
+      const updated = await commandsService.update(id, req.body || {});
+      res.json(updated);
+    } catch (err) {
+      handleChatbotError(res, err);
+    }
+  });
+
+  app.delete("/api/chatbot/agent-commands/:id", requireAuth, async (req, res) => {
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).send("ID invalido.");
+    try {
+      await commandsService.delete(id);
       res.status(204).end();
     } catch (err) {
       handleChatbotError(res, err);

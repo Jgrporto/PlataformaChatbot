@@ -7,6 +7,7 @@ import axios from "axios";
 import { logger } from "../utils/logger.js";
 import { initDb } from "./db/index.js";
 import { ChatbotConfigService } from "./services/chatbotConfigService.js";
+import { ChatbotCommandsService } from "./services/chatbotCommandsService.js";
 import { setupAuth } from "./api/auth.js";
 import { registerDeviceRoutes } from "./api/devices.js";
 import { registerChatbotRoutes } from "./api/chatbot.js";
@@ -72,6 +73,7 @@ async function start() {
 
   const configService = new ChatbotConfigService({ logger });
   await configService.init();
+  const commandsService = new ChatbotCommandsService({ logger });
 
   const followUpService = new FollowUpService({
     storagePath: FOLLOWUP_STORAGE_PATH,
@@ -90,6 +92,7 @@ async function start() {
   const deviceManager = new DeviceManager({
     logger,
     configService,
+    commandsService,
     followUpService,
     onInteraction: async (event) => {
       await logInteraction(event, logger);
@@ -168,7 +171,7 @@ async function start() {
   const requireAuth = setupAuth(app, { logger });
 
   registerDeviceRoutes(app, { deviceManager, requireAuth });
-  registerChatbotRoutes(app, { configService, requireAuth });
+  registerChatbotRoutes(app, { configService, commandsService, requireAuth });
   registerInteractionRoutes(app, { requireAuth, logger });
   registerTestRoutes(app, { requireAuth, logger });
   registerConversationRoutes(app, { requireAuth, logger, deviceManager });
