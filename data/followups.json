@@ -1,20 +1,22 @@
 {
   "records": [
     {
-      "id": "d04848a1-69bf-4840-bc1e-5c3b06c6a18f",
-      "clientPhone": "+5524999157259",
-      "chatId": "5524999157259@c.us",
-      "createdAt": "2025-12-19T01:43:15.823Z",
+      "id": "0c49cd3c-a3fd-43bf-99c0-28b90a61ad1f",
+      "clientPhone": "+5524999142097",
+      "chatId": "5524999142097@c.us",
+      "createdAt": "2025-12-23T22:56:39.786Z",
       "clientName": "",
-      "sessionName": "Venda 1"
+      "sessionName": "Porto",
+      "deviceId": "device_c51062a4"
     },
     {
-      "id": "7ae105d5-a167-47f0-9c2e-b716e28d2917",
+      "id": "62252ae4-e560-4954-ac6e-b68a6065d523",
       "clientPhone": "+5524999663511",
-      "chatId": "27320907755643@lid",
-      "createdAt": "2025-12-19T01:41:12.176Z",
+      "chatId": "5524999663511@c.us",
+      "createdAt": "2025-12-23T23:00:29.186Z",
       "clientName": "",
-      "sessionName": "Venda 1"
+      "sessionName": "Porto",
+      "deviceId": "device_c51062a4"
     }
   ]
 }
