@@ -25,6 +25,61 @@ Acesse:
 - Painel: http://localhost:3200/admin
 - QR legado: http://localhost:3200/qr
 
+## Rodar 24/7 no VPS (systemd)
+1) Compile o painel admin (em producao o servidor serve `admin/dist`):
+```bash
+npm install
+npm run build:admin
+```
+
+2) Instale o service e ajuste caminhos/usuario:
+```bash
+sudo cp deploy/systemd/tvbot.service /etc/systemd/system/tvbot.service
+sudo nano /etc/systemd/system/tvbot.service
+```
+
+Exemplo de `tvbot.service`:
+```ini
+[Unit]
+Description=+TV Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/PlataformaChatbot
+ExecStart=/root/.nvm/versions/node/v20.19.6/bin/node /root/PlataformaChatbot/src/server.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=3200
+# EnvironmentFile=/etc/tvbot.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Notas:
+- Se **nao** usa nvm, ajuste `ExecStart` para o node do sistema (ex: `/usr/bin/node`).
+- Para variaveis de ambiente, use `EnvironmentFile=/etc/tvbot.env`.
+
+3) Ative o servico:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now tvbot
+```
+
+## Operacao no VPS
+```bash
+sudo systemctl start tvbot
+sudo systemctl stop tvbot
+sudo systemctl restart tvbot
+sudo systemctl status tvbot
+journalctl -u tvbot -f
+```
+
+Dica: apos `git pull` ou alteracoes de codigo, rode `npm run build:admin` e reinicie o servico.
+
 ## Variaveis de ambiente
 - `ADMIN_USER` / `ADMIN_PASS`: login do painel
 - `SESSION_SECRET`: segredo da session
