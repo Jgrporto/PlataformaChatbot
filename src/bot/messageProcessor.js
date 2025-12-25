@@ -139,15 +139,33 @@ export function createMessageProcessor(deps = {}) {
     );
   }
 
-  function renderQuickReplyTemplate(template, { name, phone }) {
+  function applyCustomVariables(template = "", variables = {}) {
+    const safeTemplate = template || "";
+    if (!variables || typeof variables !== "object") return safeTemplate;
+    return safeTemplate.replace(/\{#([a-z0-9_]+)\}/gi, (match, keyRaw) => {
+      const key = (keyRaw || "").toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(variables, key)) return match;
+      return variables[key] ?? "";
+    });
+  }
+
+  function renderTemplateWithVariables(template, { name, phone, variables = {} }) {
     const value = template || "";
     if (!value) return value;
-    return value.replace(/\{#(nome|telefone)\}/gi, (match, keyRaw) => {
+    const withBuiltins = value.replace(/\{#(nome|telefone)\}/gi, (match, keyRaw) => {
       const key = (keyRaw || "").toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(variables, key)) {
+        return variables[key] ?? "";
+      }
       if (key === "nome") return (name || "").trim();
       if (key === "telefone") return (phone || "").trim();
       return match;
     });
+    return applyCustomVariables(withBuiltins, variables);
+  }
+
+  function renderQuickReplyTemplate(template, { name, phone, variables = {} }) {
+    return renderTemplateWithVariables(template, { name, phone, variables });
   }
 
   function findValidPhoneDigits(candidates = []) {
@@ -498,6 +516,16 @@ export function createMessageProcessor(deps = {}) {
       if (cmd.enabled) activeByToken.set(token, { ...cmd, token });
     }
     return { items, activeByToken, tokensAll };
+  }
+
+  async function getCustomVariablesMap() {
+    if (!deps.configService?.getVariablesMap) return {};
+    try {
+      return await deps.configService.getVariablesMap(deps.deviceId || null);
+    } catch (err) {
+      logger.warn("[Variaveis] Falha ao carregar mapa", err);
+      return {};
+    }
   }
 
   async function responderComTeste(session, msg, phone, nome, profile, mac) {
@@ -1129,7 +1157,7 @@ export function createMessageProcessor(deps = {}) {
     return { ctx, content, errorForLog };
   }
 
-  async function processCustomFlow(session, msg, phone, nome, textoLower) {
+  async function processCustomFlow(session, msg, phone, phoneE164, nome, textoLower, customVariables) {
     if (!deps.configService) return false;
     const current = session.state.customFlows.get(phone);
     const flows = await deps.configService.getFlows({ includeDisabled: false, deviceId: deps.deviceId || null });
@@ -1148,7 +1176,12 @@ export function createMessageProcessor(deps = {}) {
       const stage = flowDef.stages[nextIndex];
       const message = typeof stage === "string" ? stage : stage?.message;
       if (message) {
-        await replyBot(session, msg, phone, nome, message);
+        const rendered = renderTemplateWithVariables(message, {
+          name: nome,
+          phone: phoneE164 || phone || "",
+          variables: customVariables
+        });
+        await replyBot(session, msg, phone, nome, rendered);
         session.state.customFlows.set(phone, {
           flowId: flowDef.id,
           flowName: flowDef.name,
@@ -1175,7 +1208,12 @@ export function createMessageProcessor(deps = {}) {
     const firstStage = flowTrigger.stages[0];
     const message = typeof firstStage === "string" ? firstStage : firstStage?.message;
     if (message) {
-      await replyBot(session, msg, phone, nome, message);
+      const rendered = renderTemplateWithVariables(message, {
+        name: nome,
+        phone: phoneE164 || phone || "",
+        variables: customVariables
+      });
+      await replyBot(session, msg, phone, nome, rendered);
       session.state.customFlows.set(phone, { flowId: flowTrigger.id, flowName: flowTrigger.name, stageIndex: 0 });
       await logInteractionEvent({
         deviceId: deps.deviceId,
@@ -1271,7 +1309,8 @@ export function createMessageProcessor(deps = {}) {
     const handledFluxoCelular = await handleFluxoCelular(session, msg, phone, nome, textoLower);
     if (handledFluxoCelular) return finish();
 
-    if (await processCustomFlow(session, msg, phone, nome, textoLower)) {
+    const customVariables = await getCustomVariablesMap();
+    if (await processCustomFlow(session, msg, phone, phoneE164, nome, textoLower, customVariables)) {
       return finish();
     }
 
@@ -1279,7 +1318,8 @@ export function createMessageProcessor(deps = {}) {
     if (quickReply?.response) {
       const rendered = renderQuickReplyTemplate(quickReply.response, {
         name: nome,
-        phone: phoneE164 || phone || ""
+        phone: phoneE164 || phone || "",
+        variables: customVariables
       });
       await replyBot(session, msg, phone, nome, rendered);
       return finish();

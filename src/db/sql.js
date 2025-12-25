@@ -180,5 +180,36 @@ export const SQL_MIGRATIONS = [
 
       create index if not exists idx_chatbot_agent_commands_device on chatbot_agent_commands(device_id);
     `
+  },
+  {
+    id: 5,
+    name: "chatbot_variables",
+    sql: `
+      create table if not exists chatbot_variables (
+        id integer primary key autoincrement,
+        name text not null,
+        value text not null,
+        device_id text,
+        created_at text not null default (datetime('now')),
+        updated_at text not null default (datetime('now')),
+        unique(name, device_id)
+      );
+
+      create index if not exists idx_chatbot_variables_device on chatbot_variables(device_id);
+    `
+  },
+  {
+    id: 6,
+    name: "chatbot_variables_unique_name",
+    sql: `
+      delete from chatbot_variables
+      where id not in (
+        select max(id)
+        from chatbot_variables
+        group by name
+      );
+
+      create unique index if not exists idx_chatbot_variables_name on chatbot_variables(name);
+    `
   }
 ];

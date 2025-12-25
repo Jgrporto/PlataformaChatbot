@@ -73,7 +73,7 @@ async function start() {
 
   const configService = new ChatbotConfigService({ logger });
   await configService.init();
-  const commandsService = new ChatbotCommandsService({ logger });
+  const commandsService = new ChatbotCommandsService({ logger, configService });
 
   const followUpService = new FollowUpService({
     storagePath: FOLLOWUP_STORAGE_PATH,

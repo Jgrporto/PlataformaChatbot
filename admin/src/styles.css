@@ -409,6 +409,11 @@ body {
   margin-bottom: 12px;
 }
 
+.modal-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
 .modal-body {
   display: grid;
   gap: 12px;
@@ -772,6 +777,7 @@ body {
   margin-top: 6px;
   font-size: 13px;
   line-height: 1.5;
+  word-break: break-word;
 }
 
 .reply-detail-row {

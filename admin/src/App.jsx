@@ -18,6 +18,11 @@ const VIEWS = [
     subtitle: "Comandos # e respostas rapidas por dispositivo."
   },
   {
+    id: "variables",
+    title: "Variaveis",
+    subtitle: "Gerencie variaveis para usar em {#nome_da_variavel}."
+  },
+  {
     id: "flows",
     title: "Flows",
     subtitle: "Em breve: modelos e editor de fluxos."
@@ -218,6 +223,9 @@ function App() {
   const [agentCommands, setAgentCommands] = useState([]);
   const [replies, setReplies] = useState([]);
   const [flows, setFlows] = useState([]);
+  const [variables, setVariables] = useState([]);
+  const [variablesDeviceId, setVariablesDeviceId] = useState("");
+  const [variablesQuery, setVariablesQuery] = useState("");
   const [newAgentCommand, setNewAgentCommand] = useState({
     trigger: "",
     responseTemplate: "",
@@ -246,10 +254,14 @@ function App() {
   const [replyPage, setReplyPage] = useState(1);
   const [expandedReplyId, setExpandedReplyId] = useState(null);
   const [expandedCommandId, setExpandedCommandId] = useState(null);
+  const [expandedVariableId, setExpandedVariableId] = useState(null);
   const [chatbotModalOpen, setChatbotModalOpen] = useState(false);
-  const [chatbotModalMode, setChatbotModalMode] = useState("command");
+  const [chatbotModalMode, setChatbotModalMode] = useState("select");
   const [editingReplyId, setEditingReplyId] = useState(null);
   const [editingCommandId, setEditingCommandId] = useState(null);
+  const [variableModalOpen, setVariableModalOpen] = useState(false);
+  const [editingVariableId, setEditingVariableId] = useState(null);
+  const [newVariable, setNewVariable] = useState({ name: "", value: "", deviceId: "" });
   const [flowEditorOpen, setFlowEditorOpen] = useState(false);
   const [flowTriggerInput, setFlowTriggerInput] = useState("");
   const [flowJsonOpen, setFlowJsonOpen] = useState(false);
@@ -338,6 +350,18 @@ function App() {
     }
     return data;
   }, [replies, chatbotQuery, chatbotSearchMode, chatbotMatchFilter]);
+  const filteredVariables = useMemo(() => {
+    let data = variables;
+    if (variablesQuery.trim()) {
+      const query = variablesQuery.trim().toLowerCase();
+      data = data.filter((item) => {
+        const name = (item.name || "").toLowerCase();
+        const value = (item.value || "").toLowerCase();
+        return name.includes(query) || value.includes(query);
+      });
+    }
+    return data;
+  }, [variables, variablesQuery]);
   const replyPageCount = useMemo(() => {
     return Math.max(1, Math.ceil(filteredReplies.length / REPLY_PAGE_SIZE));
   }, [filteredReplies.length]);
@@ -485,6 +509,14 @@ function App() {
     setReplies(rep || []);
   }, [chatbotDeviceId]);
 
+  const loadVariables = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (variablesDeviceId) params.set("deviceId", variablesDeviceId);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const data = await api(`/api/chatbot/variables${suffix}`);
+    setVariables(data || []);
+  }, [variablesDeviceId]);
+
   const loadFlows = useCallback(async () => {
     const params = new URLSearchParams();
     if (chatbotDeviceId) params.set("deviceId", chatbotDeviceId);
@@ -553,6 +585,7 @@ function App() {
       loadInteractions().catch(() => {});
     }
     if (activeView === "chatbot") loadChatbot().catch(() => {});
+    if (activeView === "variables") loadVariables().catch(() => {});
     if (activeView === "flows") loadFlows().catch(() => {});
     if (activeView === "conversations") loadConversations().catch(() => {});
     if (activeView === "tests") loadTests().catch(() => {});
@@ -562,6 +595,7 @@ function App() {
     activeView,
     loadDevices,
     loadChatbot,
+    loadVariables,
     loadFlows,
     loadConversations,
     loadTests,
@@ -581,6 +615,7 @@ function App() {
       }
       if (activeView === "devices") loadDevices().catch(() => {});
       if (activeView === "chatbot") loadChatbot().catch(() => {});
+      if (activeView === "variables") loadVariables().catch(() => {});
       if (activeView === "flows") loadFlows().catch(() => {});
       if (activeView === "conversations") loadConversations().catch(() => {});
       if (activeView === "tests") loadTests().catch(() => {});
@@ -592,6 +627,7 @@ function App() {
     activeView,
     loadDevices,
     loadChatbot,
+    loadVariables,
     loadFlows,
     loadConversations,
     loadTests,
@@ -646,6 +682,10 @@ function App() {
     setNewReply((prev) => ({ ...prev, deviceId: chatbotDeviceId || "" }));
     setNewFlow((prev) => ({ ...prev, deviceId: chatbotDeviceId || "" }));
   }, [chatbotDeviceId]);
+
+  useEffect(() => {
+    setNewVariable((prev) => ({ ...prev, deviceId: variablesDeviceId || "" }));
+  }, [variablesDeviceId]);
 
   useEffect(() => {
     setReplyPage(1);
@@ -893,11 +933,18 @@ function App() {
   };
 
   const openChatbotModal = () => {
-    if (chatbotModalMode === "reply") {
-      openReplyModal();
-      return;
-    }
-    openCommandModal();
+    setEditingCommandId(null);
+    setEditingReplyId(null);
+    resetReplyForm();
+    setNewAgentCommand({
+      trigger: "",
+      responseTemplate: "",
+      commandType: "test",
+      enabled: true,
+      deviceId: chatbotDeviceId || ""
+    });
+    setChatbotModalMode("select");
+    setChatbotModalOpen(true);
   };
 
   const submitReplyForm = async () => {
@@ -988,6 +1035,7 @@ function App() {
     setChatbotModalOpen(false);
     setEditingCommandId(null);
     setEditingReplyId(null);
+    setChatbotModalMode("select");
   };
 
   const createAgentCommand = async () => {
@@ -1140,6 +1188,126 @@ function App() {
     }
   };
 
+  const resetVariableForm = (overrides = {}) => {
+    setNewVariable({
+      name: "",
+      value: "",
+      deviceId: variablesDeviceId || "",
+      ...overrides
+    });
+  };
+
+  const openVariableModal = (variable = null) => {
+    if (variable) {
+      setEditingVariableId(variable.id);
+      resetVariableForm({
+        name: variable.name || "",
+        value: variable.value || "",
+        deviceId: variable.deviceId || ""
+      });
+    } else {
+      setEditingVariableId(null);
+      resetVariableForm();
+    }
+    setVariableModalOpen(true);
+  };
+
+  const closeVariableModal = () => {
+    setVariableModalOpen(false);
+    setEditingVariableId(null);
+  };
+
+  const createVariable = async () => {
+    const name = newVariable.name.trim();
+    const value = newVariable.value.trim();
+    if (!name) {
+      alert("Nome da variavel obrigatorio.");
+      return false;
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(name)) {
+      alert("Use apenas letras, numeros e _ no nome.");
+      return false;
+    }
+    if (!value) {
+      alert("Valor da variavel obrigatorio.");
+      return false;
+    }
+    try {
+      await api("/api/chatbot/variables", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          value,
+          deviceId: newVariable.deviceId || null
+        })
+      });
+      resetVariableForm({ name: "", value: "" });
+      await loadVariables();
+      return true;
+    } catch (err) {
+      alert(err.message || "Erro ao criar variavel.");
+      return false;
+    }
+  };
+
+  const saveVariable = async (variable) => {
+    try {
+      await api(`/api/chatbot/variables/${variable.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: variable.name,
+          value: variable.value,
+          deviceId: variable.deviceId || null
+        })
+      });
+      await loadVariables();
+      return true;
+    } catch (err) {
+      alert(err.message || "Erro ao atualizar variavel.");
+      return false;
+    }
+  };
+
+  const submitVariableForm = async () => {
+    const payload = {
+      id: editingVariableId,
+      name: newVariable.name.trim(),
+      value: newVariable.value.trim(),
+      deviceId: newVariable.deviceId || null
+    };
+
+    if (!payload.name) {
+      alert("Nome da variavel obrigatorio.");
+      return;
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(payload.name)) {
+      alert("Use apenas letras, numeros e _ no nome.");
+      return;
+    }
+    if (!payload.value) {
+      alert("Valor da variavel obrigatorio.");
+      return;
+    }
+
+    let success = false;
+    if (editingVariableId) {
+      success = await saveVariable(payload);
+    } else {
+      success = await createVariable();
+    }
+    if (success) closeVariableModal();
+  };
+
+  const deleteVariable = async (id) => {
+    if (!confirm("Excluir variavel?")) return;
+    try {
+      await api(`/api/chatbot/variables/${id}`, { method: "DELETE" });
+      await loadVariables();
+    } catch (err) {
+      alert(err.message || "Erro ao excluir variavel.");
+    }
+  };
+
   const createFlow = async () => {
     const name = newFlow.name.trim();
     if (!name) {
@@ -1281,6 +1449,13 @@ function App() {
   });
 
   const qrExpired = qrRemaining <= 0;
+  const isEditingChatbot = Boolean(editingCommandId || editingReplyId);
+  const isChatbotTypeSelection = !isEditingChatbot && chatbotModalMode === "select";
+  const chatbotModalTitle = isEditingChatbot
+    ? editingCommandId
+      ? "Editar comando #"
+      : "Editar resposta rapida"
+    : "";
 
   return (
     <div className="app">
@@ -1553,7 +1728,7 @@ function App() {
                 Atualizar
               </button>
               <button className="primary" onClick={openChatbotModal}>
-                Criar Resposta
+                Criar comando/resposta
               </button>
             </div>
           </div>
@@ -1799,6 +1974,110 @@ function App() {
             ) : null}
           </div>
 
+        </section>
+
+        <section className={`view ${activeView === "variables" ? "active" : ""}`}>
+          <div className="chatbot-header">
+            <div>
+              <h3>Variaveis</h3>
+              <div className="device-meta">Use {`{#nome_da_variavel}`} nas respostas e comandos.</div>
+            </div>
+            <div className="chatbot-actions">
+              <button className="secondary" onClick={() => loadVariables().catch(() => {})}>
+                Atualizar
+              </button>
+              <button className="primary" onClick={() => openVariableModal()}>
+                Criar variavel
+              </button>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="filter-bar">
+              <input
+                className="input"
+                placeholder="Buscar variavel ou valor"
+                value={variablesQuery}
+                onChange={(event) => setVariablesQuery(event.target.value)}
+              />
+              <select
+                className="select"
+                value={variablesDeviceId}
+                onChange={(event) => setVariablesDeviceId(event.target.value)}
+              >
+                <option value="">Todos os Dispositivos</option>
+                {deviceOptions.map((device) => (
+                  <option key={device.value} value={device.value}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="reply-list">
+              {filteredVariables.length === 0 ? (
+                <div className="empty-state">Nenhuma variavel cadastrada.</div>
+              ) : (
+                filteredVariables.map((variable) => {
+                  const preview =
+                    variable.value && variable.value.length > 120
+                      ? `${variable.value.slice(0, 117)}...`
+                      : variable.value || "-";
+                  const deviceLabel = variable.deviceId
+                    ? deviceLabelMap.get(variable.deviceId) || variable.deviceId
+                    : "Todos";
+                  const isExpanded = expandedVariableId === variable.id;
+                  const tokenLabel = variable.name ? `{#${variable.name}}` : "-";
+                  return (
+                    <div key={variable.id} className={`reply-item ${isExpanded ? "expanded" : ""}`}>
+                      <div className="reply-main">
+                        <div className="reply-left">
+                          <div className="reply-icon">VAR</div>
+                          <div>
+                            <div className="reply-label">Variavel</div>
+                            <div className="reply-title">{tokenLabel}</div>
+                            <div className="reply-meta">{preview}</div>
+                          </div>
+                        </div>
+                        <div className="reply-actions">
+                          <button
+                            className="icon"
+                            onClick={() => setExpandedVariableId(isExpanded ? null : variable.id)}
+                          >
+                            {isExpanded ? "Fechar" : "Abrir"}
+                          </button>
+                        </div>
+                      </div>
+                      {isExpanded ? (
+                        <div className="reply-expanded">
+                          <div className="reply-detail">
+                            <div className="reply-detail-title">Valor</div>
+                            <div className="reply-detail-text">{variable.value || "-"}</div>
+                          </div>
+                          <div className="reply-detail-row">
+                            <span>Token:</span> {tokenLabel}
+                          </div>
+                          <div className="reply-detail-row">
+                            <span>Device:</span> {deviceLabel}
+                          </div>
+                          <div className="form-row">
+                            <button className="secondary" onClick={() => openVariableModal(variable)}>
+                              Editar
+                            </button>
+                            <button className="danger" onClick={() => deleteVariable(variable.id)}>
+                              Excluir
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </section>
 
         <section className={`view ${activeView === "flows" ? "active" : ""}`}>
@@ -2365,27 +2644,33 @@ function App() {
         >
           <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
             <div className="modal-head">
-              <div className="modal-tabs">
-                <button
-                  className={`modal-tab ${chatbotModalMode === "command" ? "active" : ""}`}
-                  onClick={() => setChatbotModalMode("command")}
-                >
-                  Comando #
-                </button>
-                <button
-                  className={`modal-tab ${chatbotModalMode === "reply" ? "active" : ""}`}
-                  onClick={() => setChatbotModalMode("reply")}
-                >
-                  Resposta rapida
-                </button>
-              </div>
+              {isEditingChatbot ? (
+                <h3>{chatbotModalTitle}</h3>
+              ) : (
+                <div className="modal-tabs">
+                  <button
+                    className={`modal-tab ${chatbotModalMode === "command" ? "active" : ""}`}
+                    onClick={() => setChatbotModalMode("command")}
+                  >
+                    Comando #
+                  </button>
+                  <button
+                    className={`modal-tab ${chatbotModalMode === "reply" ? "active" : ""}`}
+                    onClick={() => setChatbotModalMode("reply")}
+                  >
+                    Resposta rapida
+                  </button>
+                </div>
+              )}
               <button className="icon" onClick={closeChatbotModal}>
                 X
               </button>
             </div>
             <div className="modal-body chatbot-modal">
               <div className="chatbot-form">
-                {chatbotModalMode === "command" ? (
+                {isChatbotTypeSelection ? (
+                  <div className="empty-state">Selecione o tipo para continuar.</div>
+                ) : chatbotModalMode === "command" ? (
                   <>
                     <div className="form-row">
                       <select
@@ -2476,7 +2761,7 @@ function App() {
                       </button>
                     </div>
                   </>
-                ) : (
+                ) : chatbotModalMode === "reply" ? (
                   <>
                     <div className="form-row">
                       <select
@@ -2541,7 +2826,7 @@ function App() {
                       </button>
                     </div>
                   </>
-                )}
+                ) : null}
               </div>
               <aside className="vars-panel">
                 <div className="vars-title">Variaveis disponiveis</div>
@@ -2559,14 +2844,15 @@ function App() {
                     <span className="vars-token">{"{#senha}"}</span> Senha do teste NewBR
                   </div>
                   <div>
-                    <span className="vars-token">{"{#http1}"}</span> Primeiro link HTTP
+                    <span className="vars-token">{"{#http1}"}</span> Primeiro link HTTP curto
                   </div>
                   <div>
-                    <span className="vars-token">{"{#http2}"}</span> Segundo link HTTP
+                    <span className="vars-token">{"{#http2}"}</span> Segundo link HTTP curto
                   </div>
                 </div>
                 <div className="vars-note">
-                  Variaveis de teste funcionam apenas quando o comando # esta marcado como NewBR.
+                  Variaveis de teste funcionam apenas quando o comando # esta marcado como NewBR. Links HTTP
+                  usam URLs curtas (ex: http://bludx.top).
                 </div>
                 <div className="vars-title">Modelo de resposta</div>
                 <pre className="vars-example">{`LAZER PLAY
@@ -2575,6 +2861,63 @@ Cod: br99
 Usuario: {#usuario}
 Senha: {#senha}`}</pre>
               </aside>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {variableModalOpen ? (
+        <div
+          className="modal"
+          onClick={(event) => {
+            if (event.target.classList.contains("modal")) closeVariableModal();
+          }}
+        >
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{editingVariableId ? "Editar variavel" : "Criar variavel"}</h3>
+              <button className="icon" onClick={closeVariableModal}>
+                X
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="form-row">
+                <select
+                  className="select"
+                  value={newVariable.deviceId}
+                  onChange={(event) =>
+                    setNewVariable((prev) => ({ ...prev, deviceId: event.target.value }))
+                  }
+                >
+                  <option value="">Todos os Dispositivos</option>
+                  {deviceOptions.map((device) => (
+                    <option key={device.value} value={device.value}>
+                      {device.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <input
+                className="input"
+                placeholder="nome_da_variavel"
+                value={newVariable.name}
+                onChange={(event) => setNewVariable((prev) => ({ ...prev, name: event.target.value }))}
+              />
+              <div className="mini-note">Use apenas letras, numeros e _.</div>
+              <textarea
+                className="textarea"
+                placeholder="Valor da variavel"
+                value={newVariable.value}
+                onChange={(event) => setNewVariable((prev) => ({ ...prev, value: event.target.value }))}
+              />
+              <div className="form-row">
+                <button className="secondary" onClick={closeVariableModal}>
+                  Cancelar
+                </button>
+                <button className="primary" onClick={submitVariableForm}>
+                  {editingVariableId ? "Salvar" : "Criar"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

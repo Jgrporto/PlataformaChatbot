@@ -13,6 +13,12 @@ import {
   updateFlow,
   deleteFlow
 } from "../db/repositories/chatbot.js";
+import {
+  listVariables,
+  createVariable,
+  updateVariable,
+  deleteVariable
+} from "../db/repositories/chatbotVariables.js";
 
 const CACHE_MS = Number(process.env.CHATBOT_CACHE_MS || 4000);
 
@@ -39,6 +45,7 @@ export class ChatbotConfigService {
       commands: [],
       quickReplies: [],
       flows: [],
+      variables: [],
       loadedAt: 0
     };
   }
@@ -49,12 +56,13 @@ export class ChatbotConfigService {
   }
 
   async refresh() {
-    const [commands, quickReplies, flows] = await Promise.all([
+    const [commands, quickReplies, flows, variables] = await Promise.all([
       listCommands({ includeDisabled: true }, this.logger),
       listQuickReplies({ includeDisabled: true }, this.logger),
-      listFlows({ includeDisabled: true }, this.logger)
+      listFlows({ includeDisabled: true }, this.logger),
+      listVariables({}, this.logger)
     ]);
-    this.cache = { commands, quickReplies, flows, loadedAt: Date.now() };
+    this.cache = { commands, quickReplies, flows, variables, loadedAt: Date.now() };
   }
 
   async ensureFresh() {
@@ -79,6 +87,35 @@ export class ChatbotConfigService {
     await this.ensureFresh();
     const filtered = this.filterByDevice(this.cache.flows, deviceId);
     return includeDisabled ? filtered : filtered.filter((f) => f.enabled);
+  }
+
+  async getVariables({ deviceId = null } = {}) {
+    await this.ensureFresh();
+    if (!deviceId) return this.cache.variables;
+    return this.filterByDevice(this.cache.variables, deviceId);
+  }
+
+  async getVariablesMap(deviceId = null) {
+    await this.ensureFresh();
+    const items = this.cache.variables || [];
+    if (!deviceId) {
+      const map = {};
+      items.forEach((item) => {
+        map[item.name] = item.value;
+      });
+      return map;
+    }
+
+    const globals = items.filter((item) => !item.deviceId);
+    const scoped = items.filter((item) => item.deviceId === deviceId);
+    const map = {};
+    globals.forEach((item) => {
+      map[item.name] = item.value;
+    });
+    scoped.forEach((item) => {
+      map[item.name] = item.value;
+    });
+    return map;
   }
 
   async getCommandIndex(deviceId = null) {
@@ -164,6 +201,23 @@ export class ChatbotConfigService {
 
   async deleteFlow(id) {
     await deleteFlow(id, this.logger);
+    await this.refresh();
+  }
+
+  async createVariable(payload) {
+    const created = await createVariable(payload, this.logger);
+    await this.refresh();
+    return created;
+  }
+
+  async updateVariable(id, payload) {
+    const updated = await updateVariable(id, payload, this.logger);
+    await this.refresh();
+    return updated;
+  }
+
+  async deleteVariable(id) {
+    await deleteVariable(id, this.logger);
     await this.refresh();
   }
 

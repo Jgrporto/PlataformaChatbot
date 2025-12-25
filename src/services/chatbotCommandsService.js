@@ -12,6 +12,31 @@ const FALLBACK_TEST_MESSAGE = "So um momento! Vou chamar um dos atendentes.";
 const LIMIT_TEST_MESSAGE = "Aguarde um momento que um atendente vai falar com voce.";
 const USER_PARAM_KEYS = ["username", "user", "login", "name"];
 const PASS_PARAM_KEYS = ["password", "pass", "senha"];
+const SHORT_HTTP_HOSTS = new Set(["bludx.top"]);
+
+function normalizeHttpHost(value = "") {
+  return (value || "").trim().replace(/^www\./i, "").toLowerCase();
+}
+
+function isShortHttpLink(link = "") {
+  if (!link) return false;
+  try {
+    const url = new URL(link);
+    return SHORT_HTTP_HOSTS.has(normalizeHttpHost(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+function prioritizeShortHttpLinks(links = []) {
+  if (!Array.isArray(links)) return [];
+  const unique = Array.from(new Set(links.filter(Boolean)));
+  if (!unique.length) return unique;
+  const shortLinks = unique.filter((link) => isShortHttpLink(link));
+  if (!shortLinks.length) return unique;
+  const remainder = unique.filter((link) => !shortLinks.includes(link));
+  return [...shortLinks, ...remainder];
+}
 
 function buildTemplateVariables({
   name = "",
@@ -31,12 +56,25 @@ function buildTemplateVariables({
   };
 }
 
-function renderTemplate(template = "", vars = {}, { allowTestVars = false } = {}) {
+function applyCustomVariables(template = "", customVars = {}) {
   const safeTemplate = template || "";
-  return safeTemplate.replace(
+  if (!customVars || typeof customVars !== "object") return safeTemplate;
+  return safeTemplate.replace(/\{#([a-z0-9_]+)\}/gi, (match, keyRaw) => {
+    const key = (keyRaw || "").toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(customVars, key)) return match;
+    return customVars[key] ?? "";
+  });
+}
+
+function renderTemplate(template = "", vars = {}, { allowTestVars = false, customVars = {} } = {}) {
+  const safeTemplate = template || "";
+  const withBuiltins = safeTemplate.replace(
     /\{#(nome|telefone|usuario|senha|http1|http2)\}/gi,
     (match, keyRaw) => {
       const key = (keyRaw || "").toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(customVars, key)) {
+        return customVars[key] ?? "";
+      }
       if (key === "nome" || key === "telefone") {
         return vars[key] || "";
       }
@@ -44,6 +82,7 @@ function renderTemplate(template = "", vars = {}, { allowTestVars = false } = {}
       return vars[key] || "";
     }
   );
+  return applyCustomVariables(withBuiltins, customVars);
 }
 
 function extractHttpLinks(text = "") {
@@ -156,8 +195,19 @@ function resolveAppNameFromTrigger(trigger = "") {
 }
 
 export class ChatbotCommandsService {
-  constructor({ logger } = {}) {
+  constructor({ logger, configService } = {}) {
     this.logger = logger;
+    this.configService = configService;
+  }
+
+  async getCustomVariables(deviceId = null) {
+    if (!this.configService?.getVariablesMap) return {};
+    try {
+      return await this.configService.getVariablesMap(deviceId);
+    } catch (err) {
+      this.logger?.warn?.("[ChatbotCommands] Falha ao carregar variaveis", err);
+      return {};
+    }
   }
 
   async list({ includeDisabled = true, deviceId = null } = {}) {
@@ -199,13 +249,18 @@ export class ChatbotCommandsService {
     const command = await this.findActiveCommand(normalizedTrigger, deviceId || null);
     if (!command) return { handled: false };
 
+    const customVars = await this.getCustomVariables(deviceId || null);
+
     const baseVars = buildTemplateVariables({
       name,
       phone: phoneE164 || phone || ""
     });
 
     if (command.commandType === "reply") {
-      const response = renderTemplate(command.responseTemplate, baseVars, { allowTestVars: false });
+      const response = renderTemplate(command.responseTemplate, baseVars, {
+        allowTestVars: false,
+        customVars
+      });
       return { handled: true, response, commandType: command.commandType };
     }
 
@@ -236,6 +291,7 @@ export class ChatbotCommandsService {
     }
 
     const httpLinks = extractHttpLinks(replyText);
+    const prioritizedHttpLinks = prioritizeShortHttpLinks(httpLinks);
     const textCreds = extractCredentialsFromText(replyText);
     const urlCreds = extractCredentialsFromUrls(httpLinks);
     const usuario = textCreds.usuario || urlCreds.usuario || "";
@@ -246,11 +302,14 @@ export class ChatbotCommandsService {
       phone: clientWhatsappE164,
       usuario,
       senha,
-      http1: httpLinks[0] || "",
-      http2: httpLinks[1] || ""
+      http1: prioritizedHttpLinks[0] || "",
+      http2: prioritizedHttpLinks[1] || ""
     });
 
-    const response = renderTemplate(command.responseTemplate, vars, { allowTestVars: true });
+    const response = renderTemplate(command.responseTemplate, vars, {
+      allowTestVars: true,
+      customVars
+    });
     return { handled: true, response, commandType: command.commandType, scheduleFollowUp: true };
   }
 }

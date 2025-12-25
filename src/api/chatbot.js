@@ -90,6 +90,42 @@ export function registerChatbotRoutes(app, { configService, commandsService, req
     }
   });
 
+  app.get("/api/chatbot/variables", requireAuth, async (req, res) => {
+    const data = await configService.getVariables({ deviceId: req.query.deviceId || null });
+    res.json(data);
+  });
+
+  app.post("/api/chatbot/variables", requireAuth, async (req, res) => {
+    try {
+      const created = await configService.createVariable(req.body || {});
+      res.status(201).json(created);
+    } catch (err) {
+      handleChatbotError(res, err);
+    }
+  });
+
+  app.put("/api/chatbot/variables/:id", requireAuth, async (req, res) => {
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).send("ID invalido.");
+    try {
+      const updated = await configService.updateVariable(id, req.body || {});
+      res.json(updated);
+    } catch (err) {
+      handleChatbotError(res, err);
+    }
+  });
+
+  app.delete("/api/chatbot/variables/:id", requireAuth, async (req, res) => {
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).send("ID invalido.");
+    try {
+      await configService.deleteVariable(id);
+      res.status(204).end();
+    } catch (err) {
+      handleChatbotError(res, err);
+    }
+  });
+
   app.get("/api/chatbot/flows", requireAuth, async (req, res) => {
     const data = await configService.getFlows({ includeDisabled: true, deviceId: req.query.deviceId || null });
     res.json(data);

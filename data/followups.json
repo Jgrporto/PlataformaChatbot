@@ -1,13 +1,3 @@
 {
-  "records": [
-    {
-      "id": "9a9e6edc-ce0a-459d-99e8-782bc6a24529",
-      "clientPhone": "+5524999157259",
-      "chatId": "5524999157259@c.us",
-      "createdAt": "2025-12-24T16:06:22.573Z",
-      "clientName": "Jh",
-      "sessionName": "Porto",
-      "deviceId": "device_c51062a4"
-    }
-  ]
+  "records": []
 }

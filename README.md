@@ -122,6 +122,10 @@ Chatbot:
 - `POST /api/chatbot/quick-replies`
 - `PUT /api/chatbot/quick-replies/:id`
 - `DELETE /api/chatbot/quick-replies/:id`
+- `GET /api/chatbot/variables`
+- `POST /api/chatbot/variables`
+- `PUT /api/chatbot/variables/:id`
+- `DELETE /api/chatbot/variables/:id`
 - `GET /api/chatbot/flows`
 - `POST /api/chatbot/flows`
 - `PUT /api/chatbot/flows/:id`
@@ -145,6 +149,25 @@ WebSocket em `ws://<host>/ws` com eventos:
 - `device.created`, `device.updated`, `device.reconnected`, `device.removed`, `device.activity`
 - `interaction.new`
 - `message.new`
+
+## Variaveis personalizadas
+Crie variaveis no painel (aba "Variaveis") e use nos textos de comandos #, respostas rapidas e flows.
+
+Formato do token:
+- `{#nome_da_variavel}`
+
+Regras:
+- Apenas letras, numeros e `_`.
+- O nome e normalizado para minusculas no servidor.
+- O nome deve ser unico no sistema (nao e permitido duplicar por device).
+
+Exemplo:
+```
+Nome: {#nome}
+Usuario: {#usuario}
+Senha: {#senha}
+Http: {#http}
+```
 
 ## Observacoes
 - `whatsappQrListener.js` permanece como entrypoint legado e apenas importa `src/server.js`.
