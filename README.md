@@ -161,6 +161,16 @@ Regras:
 - O nome e normalizado para minusculas no servidor.
 - O nome deve ser unico no sistema (nao e permitido duplicar por device).
 
+Variaveis pre-criadas (sistema):
+- `{#nome}`: nome do contato (WhatsApp).
+- `{#telefone}`: telefone do contato (E.164).
+- `{#usuario}`: usuario extraido do retorno do NewBR.
+- `{#senha}`: senha extraida do retorno do NewBR.
+- `{#http1}`: primeiro link HTTP encontrado no retorno do NewBR.
+- `{#http2}`: segundo link HTTP encontrado no retorno do NewBR.
+
+Obs: o painel alerta ao tentar sobrescrever variaveis do sistema.
+
 Exemplo:
 ```
 Nome: {#nome}

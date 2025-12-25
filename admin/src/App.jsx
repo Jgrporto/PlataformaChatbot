@@ -59,6 +59,39 @@ const MATCH_LABELS = {
   list: "Lista"
 };
 
+const PRESET_VARIABLES = [
+  {
+    name: "nome",
+    label: "Nome do contato",
+    source: "Contato do WhatsApp (nome do cliente)."
+  },
+  {
+    name: "telefone",
+    label: "Telefone do contato",
+    source: "WhatsApp do cliente no formato E.164."
+  },
+  {
+    name: "usuario",
+    label: "Usuario do teste",
+    source: "Extraido do retorno do NewBR (texto ou URL)."
+  },
+  {
+    name: "senha",
+    label: "Senha do teste",
+    source: "Extraido do retorno do NewBR (texto ou URL)."
+  },
+  {
+    name: "http1",
+    label: "Primeiro link HTTP",
+    source: "Primeiro link encontrado no retorno do NewBR."
+  },
+  {
+    name: "http2",
+    label: "Segundo link HTTP",
+    source: "Segundo link encontrado no retorno do NewBR."
+  }
+];
+
 const EMPTY_QR_MODAL = {
   open: false,
   device: null,
@@ -313,6 +346,10 @@ function App() {
   const deviceOptions = useMemo(
     () => devices.map((device) => ({ value: device.id, label: buildDeviceLabel(device) })),
     [devices]
+  );
+  const presetVariableNames = useMemo(
+    () => new Set(PRESET_VARIABLES.map((item) => item.name)),
+    []
   );
   const deviceLabelMap = useMemo(() => {
     const map = new Map();
@@ -1188,6 +1225,34 @@ function App() {
     }
   };
 
+  const isPresetVariableName = (name) => {
+    const normalized = (name || "").trim().toLowerCase();
+    return presetVariableNames.has(normalized);
+  };
+
+  const confirmPresetOverride = (name) => {
+    const label = name ? `{#${name}}` : "esta variavel";
+    alert(`Atencao: ${label} e uma variavel do sistema. Nao altere sem necessidade.`);
+    if (!confirm("Deseja continuar com a alteracao?")) return false;
+    return confirm("Confirmar a alteracao da variavel do sistema?");
+  };
+
+  const openPresetVariable = (name) => {
+    const normalized = (name || "").trim().toLowerCase();
+    if (!normalized) return;
+    alert(`Variavel do sistema: {#${normalized}}. Evite alterar.`);
+    const existing = variables.find(
+      (item) => (item.name || "").toLowerCase() === normalized
+    );
+    if (existing) {
+      openVariableModal(existing);
+      return;
+    }
+    setEditingVariableId(null);
+    resetVariableForm({ name: normalized, value: "" });
+    setVariableModalOpen(true);
+  };
+
   const resetVariableForm = (overrides = {}) => {
     setNewVariable({
       name: "",
@@ -1218,7 +1283,7 @@ function App() {
   };
 
   const createVariable = async () => {
-    const name = newVariable.name.trim();
+    const name = newVariable.name.trim().toLowerCase();
     const value = newVariable.value.trim();
     if (!name) {
       alert("Nome da variavel obrigatorio.");
@@ -1287,6 +1352,11 @@ function App() {
     if (!payload.value) {
       alert("Valor da variavel obrigatorio.");
       return;
+    }
+    payload.name = payload.name.toLowerCase();
+    if (isPresetVariableName(payload.name)) {
+      const ok = confirmPresetOverride(payload.name);
+      if (!ok) return;
     }
 
     let success = false;
@@ -1989,6 +2059,33 @@ function App() {
               <button className="primary" onClick={() => openVariableModal()}>
                 Criar variavel
               </button>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <h3>Variaveis pre-criadas</h3>
+              <span className="badge">Sistema</span>
+            </div>
+            <div className="list">
+              {PRESET_VARIABLES.map((item) => {
+                const token = `{#${item.name}}`;
+                return (
+                  <div key={item.name} className="list-item">
+                    <div className="title">{token}</div>
+                    <div className="meta">{item.label}</div>
+                    <div className="mini-note">Puxa: {item.source}</div>
+                    <div className="form-row">
+                      <button className="secondary" onClick={() => openPresetVariable(item.name)}>
+                        Sobrescrever
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="hint">
+              Nao altere essas variaveis do sistema sem necessidade. A alteracao pede confirmacao extra.
             </div>
           </div>
 
@@ -2903,6 +3000,9 @@ Senha: {#senha}`}</pre>
                 value={newVariable.name}
                 onChange={(event) => setNewVariable((prev) => ({ ...prev, name: event.target.value }))}
               />
+              {isPresetVariableName(newVariable.name) ? (
+                <div className="hint">Variavel do sistema. Alterar somente se souber o impacto.</div>
+              ) : null}
               <div className="mini-note">Use apenas letras, numeros e _.</div>
               <textarea
                 className="textarea"
