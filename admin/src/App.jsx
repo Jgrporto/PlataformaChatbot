@@ -13,6 +13,11 @@ const VIEWS = [
     subtitle: "Gerencie sessoes WhatsApp e QR sob demanda."
   },
   {
+    id: "atendimento",
+    title: "Atendimento",
+    subtitle: "Listagem e acompanhamento dos atendimentos."
+  },
+  {
     id: "chatbot",
     title: "Chatbot",
     subtitle: "Comandos # e respostas rapidas por dispositivo."
@@ -28,19 +33,14 @@ const VIEWS = [
     subtitle: "Em breve: modelos e editor de fluxos."
   },
   {
-    id: "conversations",
-    title: "Conversas",
-    subtitle: "Contatos ativos, timeline de fluxo e envio de mensagens."
-  },
-  {
-    id: "tests",
-    title: "Testes API",
-    subtitle: "Execucoes registradas da API NewBR."
-  },
-  {
     id: "followups",
     title: "Follow-ups",
     subtitle: "Reatribua dispositivos e acompanhe retornos."
+  },
+  {
+    id: "tests",
+    title: "Requisicoes NEWBR",
+    subtitle: "Execucoes registradas da API NewBR."
   }
 ];
 
@@ -50,6 +50,14 @@ const DASHBOARD_RANGES = [
   { value: "30d", label: "Ultimos 30 dias" }
 ];
 
+const ATTENDANCE_RANGES = [
+  { value: "", label: "Todos" },
+  { value: "today", label: "Hoje" },
+  { value: "7d", label: "Ultimos 7 dias" },
+  { value: "30d", label: "Ultimos 30 dias" }
+];
+
+const ATTENDANCE_PAGE_SIZE = 8;
 const REPLY_PAGE_SIZE = 6;
 
 const MATCH_LABELS = {
@@ -104,6 +112,32 @@ const EMPTY_QR_MODAL = {
   waiting: false
 };
 
+const APP_BASE = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+
+function buildAppPath(pathname) {
+  const suffix = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  if (!APP_BASE || APP_BASE === "/") return suffix;
+  return `${APP_BASE}${suffix}`;
+}
+
+function parseAtendimentoPath(pathname) {
+  const base = APP_BASE && APP_BASE !== "/" ? APP_BASE : "";
+  let path = pathname || "/";
+  if (base && path.startsWith(base)) path = path.slice(base.length);
+  if (!path.startsWith("/")) path = `/${path}`;
+  if (path === "/atendimento") {
+    return { view: "atendimento", attendanceId: null };
+  }
+  const detailPrefix = "/atendimento/visualizar/";
+  if (path.startsWith(detailPrefix)) {
+    const id = path.slice(detailPrefix.length).trim();
+    if (id) {
+      return { view: "atendimento", attendanceId: id };
+    }
+  }
+  return null;
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -134,6 +168,37 @@ function formatCountdown(ms) {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "--";
+  const total = Math.floor(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatValue(value) {
+  if (value === 0) return "0";
+  return value ? String(value) : "--";
+}
+
+function getAttendanceStatusMeta(status) {
+  if (status === "closed") {
+    return {
+      label: "Finalizado",
+      pill: "danger",
+      header: "Finalizado",
+      situation: "Finalizado"
+    };
+  }
+  return {
+    label: "Ativo",
+    pill: "success",
+    header: "Em atendimento",
+    situation: "Nao finalizado"
+  };
 }
 
 function buildDeviceLabel(device) {
@@ -201,6 +266,16 @@ function getRangeStart(range) {
   }
   const days = range === "30d" ? 30 : 7;
   return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+function isDateWithinRange(value, range) {
+  if (!range) return true;
+  if (!value) return false;
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return false;
+  const start = getRangeStart(range);
+  if (!start) return true;
+  return dt >= start;
 }
 
 function buildDailySeries(items, range, predicate) {
@@ -328,11 +403,26 @@ function App() {
   const [flowError, setFlowError] = useState("");
 
   const [conversations, setConversations] = useState([]);
-  const [conversationFilters, setConversationFilters] = useState({ q: "", status: "", deviceId: "" });
-  const [activeConversationId, setActiveConversationId] = useState(null);
-  const [conversationDetails, setConversationDetails] = useState(null);
-  const [conversationMessage, setConversationMessage] = useState("");
-  const [conversationDeviceId, setConversationDeviceId] = useState("");
+
+  const [attendanceList, setAttendanceList] = useState([]);
+  const [attendanceFilters, setAttendanceFilters] = useState({
+    q: "",
+    deviceId: "",
+    entryRange: "",
+    exitRange: ""
+  });
+  const [attendanceApplied, setAttendanceApplied] = useState({
+    q: "",
+    deviceId: "",
+    entryRange: "",
+    exitRange: ""
+  });
+  const [attendancePage, setAttendancePage] = useState(1);
+  const [attendanceDetailsId, setAttendanceDetailsId] = useState(null);
+  const [attendanceDetails, setAttendanceDetails] = useState(null);
+  const [attendanceMessage, setAttendanceMessage] = useState("");
+  const [attendanceDeviceId, setAttendanceDeviceId] = useState("");
+  const [attendanceNow, setAttendanceNow] = useState(Date.now());
 
   const [tests, setTests] = useState([]);
   const [testsFilters, setTestsFilters] = useState({ status: "", from: "", to: "", deviceId: "" });
@@ -406,6 +496,74 @@ function App() {
     const start = (replyPage - 1) * REPLY_PAGE_SIZE;
     return filteredReplies.slice(start, start + REPLY_PAGE_SIZE);
   }, [filteredReplies, replyPage]);
+  const attendanceQuickReplies = useMemo(() => {
+    const deviceId = attendanceDetails?.deviceId || "";
+    return (replies || [])
+      .filter((reply) => reply.enabled !== false)
+      .filter((reply) => !reply.deviceId || !deviceId || reply.deviceId === deviceId);
+  }, [replies, attendanceDetails]);
+  const sortedAttendanceMessages = useMemo(() => {
+    const raw = attendanceDetails?.messages || [];
+    return raw
+      .map((msg, index) => ({ msg, index }))
+      .sort((left, right) => {
+        const timeLeft = new Date(left.msg.createdAt).getTime();
+        const timeRight = new Date(right.msg.createdAt).getTime();
+        const hasTimeLeft = Number.isFinite(timeLeft);
+        const hasTimeRight = Number.isFinite(timeRight);
+
+        if (hasTimeLeft && hasTimeRight && timeLeft !== timeRight) {
+          return timeLeft - timeRight;
+        }
+        if (hasTimeLeft !== hasTimeRight) {
+          return hasTimeLeft ? -1 : 1;
+        }
+
+        const originLeft = (left.msg.origin || "").toUpperCase();
+        const originRight = (right.msg.origin || "").toUpperCase();
+        const agentLeft = originLeft === "AGENTE";
+        const agentRight = originRight === "AGENTE";
+        const botLeft = originLeft === "BOT";
+        const botRight = originRight === "BOT";
+        if ((agentLeft && botRight) || (botLeft && agentRight)) {
+          return agentLeft ? -1 : 1;
+        }
+
+        const idLeft = Number(left.msg.id);
+        const idRight = Number(right.msg.id);
+        if (Number.isFinite(idLeft) && Number.isFinite(idRight) && idLeft !== idRight) {
+          return idLeft - idRight;
+        }
+
+        return left.index - right.index;
+      })
+      .map((entry) => entry.msg);
+  }, [attendanceDetails]);
+  const filteredAttendances = useMemo(() => {
+    const query = attendanceApplied.q.trim().toLowerCase();
+    const deviceId = attendanceApplied.deviceId;
+    const entryRange = attendanceApplied.entryRange;
+    const exitRange = attendanceApplied.exitRange;
+    return attendanceList.filter((item) => {
+      if (deviceId && item.deviceId !== deviceId) return false;
+      if (entryRange && !isDateWithinRange(item.startedAt, entryRange)) return false;
+      if (exitRange && !isDateWithinRange(item.closedAt, exitRange)) return false;
+      if (query) {
+        const haystack = `${item.name || ""} ${item.phone || ""} ${item.protocol || ""} ${
+          item.deviceName || ""
+        } ${item.deviceId || ""}`.toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+      return true;
+    });
+  }, [attendanceList, attendanceApplied]);
+  const attendancePageCount = useMemo(() => {
+    return Math.max(1, Math.ceil(filteredAttendances.length / ATTENDANCE_PAGE_SIZE));
+  }, [filteredAttendances.length]);
+  const pagedAttendances = useMemo(() => {
+    const start = (attendancePage - 1) * ATTENDANCE_PAGE_SIZE;
+    return filteredAttendances.slice(start, start + ATTENDANCE_PAGE_SIZE);
+  }, [filteredAttendances, attendancePage]);
   const flowTriggerList = useMemo(() => {
     try {
       return parseJsonArray(flowDraft.triggers);
@@ -563,20 +721,32 @@ function App() {
   }, [chatbotDeviceId]);
 
   const loadConversations = useCallback(async () => {
-    const params = new URLSearchParams();
-    if (conversationFilters.q) params.set("q", conversationFilters.q);
-    if (conversationFilters.status) params.set("status", conversationFilters.status);
-    if (conversationFilters.deviceId) params.set("deviceId", conversationFilters.deviceId);
-    const suffix = params.toString() ? `?${params.toString()}` : "";
-    const data = await api(`/api/conversations${suffix}`);
+    const data = await api("/api/conversations");
     setConversations(data || []);
-  }, [conversationFilters]);
+  }, []);
 
-  const loadConversationDetails = useCallback(async (id) => {
+  const loadAttendanceList = useCallback(
+    async (filters = attendanceApplied) => {
+      const params = new URLSearchParams();
+      if (filters.q) params.set("q", filters.q);
+      if (filters.deviceId) params.set("deviceId", filters.deviceId);
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const data = await api(`/api/conversations${suffix}`);
+      setAttendanceList(data || []);
+    },
+    [attendanceApplied]
+  );
+
+  const loadAttendanceDetails = useCallback(async (id) => {
     if (!id) return;
     const data = await api(`/api/conversations/${id}`);
-    setConversationDetails(data || null);
-    setConversationDeviceId(data?.deviceId || "");
+    setAttendanceDetails(data || null);
+    setAttendanceDeviceId(data?.deviceId || "");
+  }, []);
+
+  const loadQuickReplies = useCallback(async () => {
+    const data = await api("/api/chatbot/quick-replies");
+    setReplies(data || []);
   }, []);
 
   const loadTests = useCallback(async () => {
@@ -608,6 +778,24 @@ function App() {
   }, [checkAuth]);
 
   useEffect(() => {
+    const route = parseAtendimentoPath(window.location.pathname);
+    if (!route) return;
+    setActiveView(route.view);
+    setAttendanceDetailsId(route.attendanceId || null);
+  }, []);
+
+  useEffect(() => {
+    const handlePop = () => {
+      const route = parseAtendimentoPath(window.location.pathname);
+      if (!route) return;
+      setActiveView(route.view);
+      setAttendanceDetailsId(route.attendanceId || null);
+    };
+    window.addEventListener("popstate", handlePop);
+    return () => window.removeEventListener("popstate", handlePop);
+  }, []);
+
+  useEffect(() => {
     if (auth.status !== "ready") return;
     loadDevices().catch(() => {});
   }, [auth.status, loadDevices]);
@@ -624,7 +812,10 @@ function App() {
     if (activeView === "chatbot") loadChatbot().catch(() => {});
     if (activeView === "variables") loadVariables().catch(() => {});
     if (activeView === "flows") loadFlows().catch(() => {});
-    if (activeView === "conversations") loadConversations().catch(() => {});
+    if (activeView === "atendimento") {
+      loadAttendanceList().catch(() => {});
+      loadQuickReplies().catch(() => {});
+    }
     if (activeView === "tests") loadTests().catch(() => {});
     if (activeView === "followups") loadFollowups().catch(() => {});
   }, [
@@ -635,6 +826,8 @@ function App() {
     loadVariables,
     loadFlows,
     loadConversations,
+    loadAttendanceList,
+    loadQuickReplies,
     loadTests,
     loadFollowups,
     loadInteractions
@@ -654,7 +847,7 @@ function App() {
       if (activeView === "chatbot") loadChatbot().catch(() => {});
       if (activeView === "variables") loadVariables().catch(() => {});
       if (activeView === "flows") loadFlows().catch(() => {});
-      if (activeView === "conversations") loadConversations().catch(() => {});
+      if (activeView === "atendimento") loadAttendanceList().catch(() => {});
       if (activeView === "tests") loadTests().catch(() => {});
       if (activeView === "followups") loadFollowups().catch(() => {});
     }, 6000);
@@ -667,18 +860,34 @@ function App() {
     loadVariables,
     loadFlows,
     loadConversations,
+    loadAttendanceList,
     loadTests,
     loadFollowups,
     loadInteractions
   ]);
 
   useEffect(() => {
-    if (!activeConversationId) {
-      setConversationDetails(null);
+    if (!attendanceDetailsId) {
+      setAttendanceDetails(null);
       return;
     }
-    loadConversationDetails(activeConversationId).catch(() => {});
-  }, [activeConversationId, loadConversationDetails]);
+    if (auth.status !== "ready") return;
+    loadAttendanceDetails(attendanceDetailsId).catch(() => {});
+  }, [attendanceDetailsId, loadAttendanceDetails, auth.status]);
+
+  useEffect(() => {
+    if (attendancePage > attendancePageCount) {
+      setAttendancePage(attendancePageCount);
+    }
+  }, [attendancePage, attendancePageCount]);
+
+  useEffect(() => {
+    if (activeView !== "atendimento") return;
+    const interval = setInterval(() => {
+      setAttendanceNow(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeView]);
 
   useEffect(() => {
     if (!selectedFlowId && flows.length) {
@@ -1442,41 +1651,99 @@ function App() {
     }
   };
 
-  const openConversation = (id) => {
-    setActiveConversationId(id);
+  const applyAttendanceFilters = () => {
+    const next = { ...attendanceFilters };
+    setAttendanceApplied(next);
+    setAttendancePage(1);
+    loadAttendanceList(next).catch(() => {});
   };
 
-  const sendConversationMessage = async () => {
-    if (!conversationDetails) return;
-    const message = conversationMessage.trim();
+  const clearAttendanceFilters = () => {
+    const cleared = { q: "", deviceId: "", entryRange: "", exitRange: "" };
+    setAttendanceFilters(cleared);
+    setAttendanceApplied(cleared);
+    setAttendancePage(1);
+    loadAttendanceList(cleared).catch(() => {});
+  };
+
+  const openAttendanceDetails = (id) => {
+    if (!id) return;
+    setAttendanceDetails(null);
+    setAttendanceMessage("");
+    setAttendanceDetailsId(id);
+    setActiveView("atendimento");
+    try {
+      window.history.pushState(
+        { view: "atendimento", attendanceId: id },
+        "",
+        buildAppPath(`/atendimento/visualizar/${id}`)
+      );
+    } catch {
+      // ignore
+    }
+  };
+
+  const showAttendanceList = () => {
+    setAttendanceDetailsId(null);
+    setAttendanceDetails(null);
+    setAttendanceMessage("");
+    setActiveView("atendimento");
+    try {
+      window.history.pushState({ view: "atendimento" }, "", buildAppPath("/atendimento"));
+    } catch {
+      // ignore
+    }
+  };
+
+  const sendAttendanceMessage = async (text) => {
+    if (!attendanceDetails) return;
+    const message = typeof text === "string" ? text.trim() : attendanceMessage.trim();
     if (!message) return;
-    const deviceId = conversationDeviceId || conversationDetails.deviceId || "";
+    const deviceId = attendanceDeviceId || attendanceDetails.deviceId || "";
     if (!deviceId) {
       alert("Device nao definido.");
       return;
     }
     try {
-      await api(`/api/conversations/${conversationDetails.id}/send`, {
+      await api(`/api/conversations/${attendanceDetails.id}/send`, {
         method: "POST",
         body: JSON.stringify({ message, deviceId })
       });
-      setConversationMessage("");
-      await loadConversationDetails(conversationDetails.id);
-      await loadConversations();
+      if (typeof text !== "string") {
+        setAttendanceMessage("");
+      }
+      await loadAttendanceDetails(attendanceDetails.id);
+      await loadAttendanceList();
     } catch (err) {
       alert(err.message || "Erro ao enviar mensagem.");
     }
   };
 
-  const closeConversation = async () => {
-    if (!conversationDetails) return;
-    if (!confirm("Finalizar esta conversa?")) return;
+  const closeAttendanceById = async (id) => {
+    if (!id) return;
+    if (!confirm("Finalizar este atendimento?")) return;
     try {
-      await api(`/api/conversations/${conversationDetails.id}/close`, { method: "POST" });
-      await loadConversationDetails(conversationDetails.id);
-      await loadConversations();
+      await api(`/api/conversations/${id}/close`, { method: "POST" });
+      if (String(attendanceDetailsId) === String(id)) {
+        await loadAttendanceDetails(id);
+      }
+      await loadAttendanceList();
     } catch (err) {
-      alert(err.message || "Erro ao fechar conversa.");
+      alert(err.message || "Erro ao finalizar atendimento.");
+    }
+  };
+
+  const closeAttendanceDetails = async () => {
+    if (!attendanceDetails) return;
+    await closeAttendanceById(attendanceDetails.id);
+  };
+
+  const copyToClipboard = async (value) => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(String(value));
+    } catch {
+      alert("Falha ao copiar.");
     }
   };
 
@@ -1510,6 +1777,21 @@ function App() {
     }
   };
 
+  const handleNavClick = (viewId) => {
+    if (viewId === "atendimento") {
+      showAttendanceList();
+      return;
+    }
+    setActiveView(viewId);
+    if (window.location.pathname.includes("/atendimento")) {
+      try {
+        window.history.pushState({ view: viewId }, "", buildAppPath("/"));
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   const filteredDevices = devices.filter((device) => {
     const text = `${device.name || ""} ${device.status || ""} ${device.devicePhone || ""}`
       .toLowerCase()
@@ -1526,6 +1808,14 @@ function App() {
       ? "Editar comando #"
       : "Editar resposta rapida"
     : "";
+  const attendanceStatus = getAttendanceStatusMeta(attendanceDetails?.status);
+  const attendanceAgentLabel = attendanceDetails
+    ? deviceLabelMap.get(attendanceDetails.deviceId) ||
+      attendanceDetails.deviceName ||
+      attendanceDetails.deviceId ||
+      "Sem agente"
+    : "Sem agente";
+  const attendanceClosed = attendanceDetails?.status === "closed";
 
   return (
     <div className="app">
@@ -1542,7 +1832,7 @@ function App() {
             <button
               key={view.id}
               className={`nav-btn ${activeView === view.id ? "active" : ""}`}
-              onClick={() => setActiveView(view.id)}
+              onClick={() => handleNavClick(view.id)}
             >
               {view.title}
             </button>
@@ -2188,177 +2478,369 @@ function App() {
           </div>
         </section>
 
-        <section className={`view ${activeView === "conversations" ? "active" : ""}`}>
-          <div className="card">
-            <div className="card-head">
-              <h3>Conversas</h3>
-              <span className="badge">Somente contatos</span>
-            </div>
-            <div className="form-row">
-              <input
-                className="input"
-                placeholder="Buscar por nome, telefone ou protocolo"
-                value={conversationFilters.q}
-                onChange={(event) =>
-                  setConversationFilters((prev) => ({ ...prev, q: event.target.value }))
-                }
-              />
-              <select
-                className="select"
-                value={conversationFilters.status}
-                onChange={(event) =>
-                  setConversationFilters((prev) => ({ ...prev, status: event.target.value }))
-                }
-              >
-                <option value="">Todos</option>
-                <option value="open">Abertas</option>
-                <option value="closed">Fechadas</option>
-              </select>
-              <select
-                className="select"
-                value={conversationFilters.deviceId}
-                onChange={(event) =>
-                  setConversationFilters((prev) => ({ ...prev, deviceId: event.target.value }))
-                }
-              >
-                <option value="">Todos</option>
-                {deviceOptions.map((device) => (
-                  <option key={device.value} value={device.value}>
-                    {device.label}
-                  </option>
-                ))}
-              </select>
-              <button className="secondary" onClick={() => loadConversations().catch(() => {})}>
-                Atualizar
-              </button>
-            </div>
-          </div>
-          <div className="card">
-            <div className="conversation-layout">
-              <div>
-                <div className="conversation-list">
-                  {conversations.length === 0 ? (
-                    <div className="list-item">Nenhuma conversa encontrada.</div>
-                  ) : (
-                    conversations.map((convo) => (
-                      <div
-                        key={convo.id}
-                        className="list-item"
-                        onClick={() => openConversation(convo.id)}
-                      >
-                        <div className="title">
-                          {convo.name || "Sem nome"} ({convo.phone || "-"})
-                        </div>
-                        <div className="meta">
-                          {convo.protocol || "-"} | {convo.deviceName || "Sem device"} |{" "}
-                          {formatDate(convo.lastMessageAt || convo.startedAt)}
-                        </div>
-                        <div className="meta">{convo.lastMessage || "-"}</div>
-                      </div>
-                    ))
-                  )}
+        <section className={`view ${activeView === "atendimento" ? "active" : ""}`}>
+          {!attendanceDetailsId ? (
+            <>
+              <div className="card">
+                <div className="card-head">
+                  <h3>Atendimento</h3>
+                </div>
+                <div className="attendance-filter-bar">
+                  <div className="attendance-filter-fields">
+                    <input
+                      className="input"
+                      placeholder="Busca por filtro"
+                      value={attendanceFilters.q}
+                      onChange={(event) =>
+                        setAttendanceFilters((prev) => ({ ...prev, q: event.target.value }))
+                      }
+                    />
+                    <select
+                      className="select"
+                      value={attendanceFilters.deviceId}
+                      onChange={(event) =>
+                        setAttendanceFilters((prev) => ({ ...prev, deviceId: event.target.value }))
+                      }
+                    >
+                      <option value="">Agente (Dispositivo)</option>
+                      {deviceOptions.map((device) => (
+                        <option key={device.value} value={device.value}>
+                          {device.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="select"
+                      value={attendanceFilters.entryRange}
+                      onChange={(event) =>
+                        setAttendanceFilters((prev) => ({ ...prev, entryRange: event.target.value }))
+                      }
+                    >
+                      <option value="">Entrada</option>
+                      {ATTENDANCE_RANGES.filter((range) => range.value).map((range) => (
+                        <option key={`entry-${range.value}`} value={range.value}>
+                          {range.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="select"
+                      value={attendanceFilters.exitRange}
+                      onChange={(event) =>
+                        setAttendanceFilters((prev) => ({ ...prev, exitRange: event.target.value }))
+                      }
+                    >
+                      <option value="">Termino</option>
+                      {ATTENDANCE_RANGES.filter((range) => range.value).map((range) => (
+                        <option key={`exit-${range.value}`} value={range.value}>
+                          {range.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="attendance-filter-actions">
+                    <button className="primary" onClick={applyAttendanceFilters}>
+                      Buscar
+                    </button>
+                    <button className="secondary" onClick={clearAttendanceFilters}>
+                      Limpar filtros
+                    </button>
+                  </div>
                 </div>
               </div>
-              <div className="conversation-detail">
-                {!conversationDetails ? (
-                  <div className="device-meta">Selecione uma conversa para ver detalhes.</div>
-                ) : (
-                  <>
-                    <div className="card-head">
-                      <div>
-                        <h3>{conversationDetails.name || "Sem nome"}</h3>
-                        <div className="device-meta">
-                          {conversationDetails.phone || "-"} | {conversationDetails.deviceName || "Sem device"}
-                          {conversationDetails.devicePhone ? ` (${conversationDetails.devicePhone})` : ""}
-                        </div>
-                        <div className="device-meta">Status: {conversationDetails.status}</div>
-                      </div>
-                      <div className="conversation-actions">
+              <div className="card">
+                <div className="attendance-table-wrap">
+                  <div className="attendance-table">
+                    <div className="attendance-row header">
+                      <div>Acoes</div>
+                      <div>Cod.</div>
+                      <div>Agente</div>
+                      <div>Contato</div>
+                      <div>Numero de protocolo</div>
+                      <div>Entrada</div>
+                      <div>Termino</div>
+                      <div>Status</div>
+                      <div>Tempo Atendimento</div>
+                    </div>
+                    {pagedAttendances.length === 0 ? (
+                      <div className="empty-state">Nenhum atendimento encontrado.</div>
+                    ) : (
+                      pagedAttendances.map((convo) => {
+                        const statusMeta = getAttendanceStatusMeta(convo.status);
+                        const startedAt = convo.startedAt ? new Date(convo.startedAt) : null;
+                        const endedAt = convo.closedAt
+                          ? new Date(convo.closedAt)
+                          : new Date(attendanceNow);
+                        const hasStart = startedAt && !Number.isNaN(startedAt.getTime());
+                        const hasEnd = endedAt && !Number.isNaN(endedAt.getTime());
+                        const durationMs = hasStart && hasEnd ? endedAt.getTime() - startedAt.getTime() : NaN;
+                        const duration = formatDuration(durationMs);
+                        const agentLabel =
+                          deviceLabelMap.get(convo.deviceId) ||
+                          convo.deviceName ||
+                          convo.deviceId ||
+                          "Sem agente";
+                        return (
+                          <div key={convo.id} className="attendance-row">
+                            <div className="attendance-actions">
+                              <button className="secondary" onClick={() => openAttendanceDetails(convo.id)}>
+                                Visualizar
+                              </button>
+                              <button
+                                className="danger"
+                                onClick={() => closeAttendanceById(convo.id)}
+                                disabled={convo.status === "closed"}
+                              >
+                                Finalizar
+                              </button>
+                            </div>
+                            <div>{formatValue(convo.id)}</div>
+                            <div className="attendance-cell">
+                              <div>{agentLabel}</div>
+                              <span className="channel-label whatsapp">
+                                <span className="channel-dot" />
+                                WhatsApp
+                              </span>
+                            </div>
+                            <div className="attendance-cell">
+                              <div>{convo.name || "Sem nome"}</div>
+                              <div className="attendance-sub">{formatValue(convo.phone)}</div>
+                            </div>
+                            <div>{formatValue(convo.protocol)}</div>
+                            <div>{formatDate(convo.startedAt)}</div>
+                            <div>{convo.closedAt ? formatDate(convo.closedAt) : "--"}</div>
+                            <div>
+                              <span className={`pill ${statusMeta.pill}`}>{statusMeta.label}</span>
+                            </div>
+                            <div>{duration}</div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+                {attendancePageCount > 1 ? (
+                  <div className="pagination">
+                    {Array.from({ length: attendancePageCount }).map((_, index) => {
+                      const page = index + 1;
+                      return (
                         <button
-                          className="secondary"
-                          onClick={() => loadConversationDetails(conversationDetails.id)}
+                          key={`attendance-page-${page}`}
+                          className={`page-btn ${attendancePage === page ? "active" : ""}`}
+                          onClick={() => setAttendancePage(page)}
                         >
-                          Atualizar
+                          {page}
                         </button>
-                        <button className="danger" onClick={closeConversation}>
-                          Fechar conversa
-                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          ) : attendanceDetails ? (
+            <div className="attendance-detail">
+              <div className="attendance-detail-top">
+                <button className="secondary" onClick={showAttendanceList}>
+                  Voltar
+                </button>
+                <div className="device-meta">
+                  Atendimento {formatValue(attendanceDetails.protocol || attendanceDetails.id)}
+                </div>
+              </div>
+              <div className="card attendance-header">
+                <div className="attendance-header-main">
+                  <div className="attendance-status-text">{attendanceStatus.header}</div>
+                  <div className="attendance-header-info">
+                    <span className="channel-label whatsapp">
+                      <span className="channel-dot" />
+                      WhatsApp
+                    </span>
+                    <span>Agente: {attendanceAgentLabel}</span>
+                    <span>Entrada: {formatDate(attendanceDetails.startedAt)}</span>
+                    <span>Situacao: {attendanceStatus.situation}</span>
+                  </div>
+                </div>
+                <div className="attendance-header-actions">
+                  <button className="danger" onClick={closeAttendanceDetails} disabled={attendanceClosed}>
+                    Finalizar Chamada
+                  </button>
+                </div>
+              </div>
+
+              <div className="attendance-grid">
+                <div className="attendance-main">
+                  <div className="card">
+                    <div className="card-head">
+                      <h3>Cliente</h3>
+                    </div>
+                    <div className="attendance-fields">
+                      <div className="attendance-field">
+                        <span className="attendance-field-label">Nome</span>
+                        <span className="attendance-field-value">
+                          {formatValue(attendanceDetails.name)}
+                        </span>
+                      </div>
+                      <div className="attendance-field">
+                        <span className="attendance-field-label">Telefone</span>
+                        <span className="attendance-field-value">
+                          {formatValue(attendanceDetails.phone)}
+                        </span>
+                      </div>
+                      <div className="attendance-field">
+                        <span className="attendance-field-label">E-mail</span>
+                        <span className="attendance-field-value">
+                          {formatValue(attendanceDetails.email)}
+                        </span>
+                      </div>
+                      <div className="attendance-field">
+                        <span className="attendance-field-label">Numero de protocolo</span>
+                        <span className="attendance-field-value">
+                          {formatValue(attendanceDetails.protocol)}
+                        </span>
                       </div>
                     </div>
+                  </div>
 
-                    <div className="conversation-messages">
-                      {(conversationDetails.messages || []).length === 0 ? (
+                  <div className="card attendance-chat-card">
+                    <div className="card-head">
+                      <h3>Conversa</h3>
+                    </div>
+                    <div className="attendance-chat-history">
+                      {sortedAttendanceMessages.length === 0 ? (
                         <div className="device-meta">Sem mensagens registradas.</div>
                       ) : (
-                        conversationDetails.messages.map((msg) => (
-                          <div
-                            key={msg.id}
-                            className={`message ${msg.direction === "out" ? "out" : "in"}`}
+                        sortedAttendanceMessages.map((msg) => {
+                          const isOutgoing =
+                            msg.direction === "out" || msg.origin === "AGENTE" || msg.origin === "BOT";
+                          const isBot = msg.origin === "BOT";
+                          const sender = isOutgoing
+                            ? isBot
+                              ? "Bot"
+                              : attendanceAgentLabel
+                            : attendanceDetails.name || "Cliente";
+                          const avatarText = isOutgoing
+                            ? isBot
+                              ? "BOT"
+                              : (attendanceAgentLabel || "A").trim().slice(0, 2).toUpperCase()
+                            : "WA";
+                          return (
+                            <div
+                              key={msg.id}
+                              className={`attendance-message ${isOutgoing ? "out" : "in"} ${
+                                isBot ? "bot" : ""
+                              }`}
+                            >
+                              {!isOutgoing ? (
+                                <div className="attendance-avatar whatsapp">{avatarText}</div>
+                              ) : null}
+                              <div className="attendance-bubble">
+                                <div className="attendance-bubble-head">
+                                  <span className="attendance-sender">{sender}</span>
+                                  <span className="attendance-time">{formatDate(msg.createdAt)}</span>
+                                </div>
+                                <div className="attendance-text">{msg.content}</div>
+                              </div>
+                              {isOutgoing ? (
+                                <div className={`attendance-avatar ${isBot ? "bot" : "agent"}`}>
+                                  {avatarText}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {attendanceQuickReplies.length ? (
+                      <div className="attendance-quick-replies">
+                        {attendanceQuickReplies.map((reply) => (
+                          <button
+                            key={reply.id}
+                            className="quick-reply-btn"
+                            onClick={() => sendAttendanceMessage(reply.response || "")}
+                            disabled={attendanceClosed}
+                            title={reply.response || reply.trigger || ""}
                           >
-                            <div className="meta">
-                              {msg.origin || "-"} | {msg.messageType || "text"} |{" "}
-                              {formatDate(msg.createdAt)}
-                            </div>
-                            <div className="text">{msg.content}</div>
-                          </div>
-                        ))
-                      )}
-                    </div>
+                            {reply.trigger || reply.response || "Resposta"}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
 
-                    <div className="flow-timeline">
-                      {(conversationDetails.flowEvents || []).length === 0 ? (
-                        <div className="device-meta">Sem eventos de fluxo.</div>
-                      ) : (
-                        conversationDetails.flowEvents.map((event) => (
-                          <div key={event.id} className="flow-step">
-                            <div className="meta">
-                              {formatDate(event.createdAt)} | {event.eventType}
-                            </div>
-                            <div>
-                              Flow: {event.flow || "-"} | Etapa: {event.stage || "-"}
-                            </div>
-                            {event.content ? <div className="device-meta">{event.content}</div> : null}
-                          </div>
-                        ))
-                      )}
-                    </div>
-
-                    <div className="conversation-send">
+                    <div className="attendance-chat-input">
                       <textarea
                         className="textarea"
-                        placeholder="Escreva uma mensagem..."
-                        value={conversationMessage}
-                        onChange={(event) => setConversationMessage(event.target.value)}
+                        placeholder={attendanceClosed ? "Atendimento finalizado." : "Escreva uma mensagem..."}
+                        value={attendanceMessage}
+                        onChange={(event) => setAttendanceMessage(event.target.value)}
+                        disabled={attendanceClosed}
                       />
-                      <div className="form-row">
-                        <select
-                          className="select"
-                          value={conversationDeviceId}
-                          onChange={(event) => setConversationDeviceId(event.target.value)}
-                        >
-                          <option value="">Selecionar device</option>
-                          {deviceOptions.map((device) => (
-                            <option key={device.value} value={device.value}>
-                              {device.label}
-                            </option>
-                          ))}
-                        </select>
-                        <button className="primary" onClick={sendConversationMessage}>
+                      <div className="attendance-input-actions">
+                        <button className="primary" onClick={() => sendAttendanceMessage()} disabled={attendanceClosed}>
                           Enviar
                         </button>
                       </div>
                     </div>
-                  </>
-                )}
+                  </div>
+                </div>
+
+                <aside className="attendance-sidebar">
+                  <div className="card attendance-side-card">
+                    <div className="side-block">
+                      <div className="side-block-title">Numero de protocolo</div>
+                      <div className="side-row">
+                        <span>{formatValue(attendanceDetails.protocol)}</span>
+                        <button
+                          className="copy-btn"
+                          onClick={() => copyToClipboard(attendanceDetails.protocol)}
+                          disabled={!attendanceDetails.protocol}
+                        >
+                          Copiar
+                        </button>
+                      </div>
+                    </div>
+                    <div className="side-block">
+                      <div className="side-block-title">Contato</div>
+                      <div className="side-row">
+                        <span>{formatValue(attendanceDetails.name)}</span>
+                        <button
+                          className="copy-btn"
+                          onClick={() => copyToClipboard(attendanceDetails.name)}
+                          disabled={!attendanceDetails.name}
+                        >
+                          Copiar
+                        </button>
+                      </div>
+                      <div className="side-row">
+                        <span>{formatValue(attendanceDetails.phone)}</span>
+                        <button
+                          className="copy-btn"
+                          onClick={() => copyToClipboard(attendanceDetails.phone)}
+                          disabled={!attendanceDetails.phone}
+                        >
+                          Copiar
+                        </button>
+                      </div>
+                    </div>
+                    <div className="side-block">
+                      <div className="side-block-title">Informacoes extras</div>
+                      <div className="device-meta">--</div>
+                    </div>
+                  </div>
+                </aside>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="card">
+              <div className="empty-state">Carregando atendimento...</div>
+            </div>
+          )}
         </section>
 
         <section className={`view ${activeView === "tests" ? "active" : ""}`}>
           <div className="card">
             <div className="card-head">
-              <h3>Testes API</h3>
+              <h3>Requisicoes NEWBR</h3>
             </div>
             <div className="form-row">
               <select

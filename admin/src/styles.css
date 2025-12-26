@@ -52,6 +52,11 @@ body {
   border-right: 1px solid var(--stroke);
   backdrop-filter: blur(10px);
   box-shadow: 10px 0 30px rgba(4, 5, 10, 0.5);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  align-self: start;
+  overflow-y: auto;
 }
 
 .brand {
@@ -1272,6 +1277,351 @@ body {
   gap: 10px;
 }
 
+.attendance-filter-bar {
+  display: grid;
+  gap: 12px;
+}
+
+.attendance-filter-fields {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.attendance-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.attendance-table-wrap {
+  overflow-x: auto;
+}
+
+.attendance-table {
+  display: grid;
+  gap: 10px;
+  min-width: 1040px;
+}
+
+.attendance-row {
+  display: grid;
+  grid-template-columns: 1.3fr 0.6fr 1.2fr 1.3fr 1.4fr 1fr 1fr 0.9fr 1.1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--stroke);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+}
+
+.attendance-row.header {
+  background: transparent;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  box-shadow: none;
+}
+
+.attendance-cell {
+  display: grid;
+  gap: 4px;
+}
+
+.attendance-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.attendance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.channel-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.channel-label.whatsapp {
+  color: #86efac;
+}
+
+.channel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #22c55e;
+}
+
+.attendance-detail {
+  display: grid;
+  gap: 16px;
+}
+
+.attendance-detail-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.attendance-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.attendance-header-main {
+  display: grid;
+  gap: 8px;
+}
+
+.attendance-status-text {
+  font-size: 20px;
+  font-weight: 700;
+  font-family: "Space Grotesk", sans-serif;
+}
+
+.attendance-header-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.attendance-header-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.attendance-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px;
+  align-items: start;
+}
+
+.attendance-main {
+  display: grid;
+  gap: 16px;
+}
+
+.attendance-sidebar {
+  display: grid;
+  gap: 16px;
+}
+
+.attendance-fields {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.attendance-field {
+  background: var(--panel-2);
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.attendance-field-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.attendance-field-value {
+  font-weight: 600;
+}
+
+.attendance-chat-card {
+  display: grid;
+  gap: 12px;
+}
+
+.attendance-chat-history {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.attendance-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.attendance-message.out {
+  flex-direction: row-reverse;
+}
+
+.attendance-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.attendance-avatar.whatsapp {
+  background: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2);
+}
+
+.attendance-avatar.agent {
+  background: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.2);
+}
+
+.attendance-avatar.bot {
+  background: #7c3aed;
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.25);
+}
+
+.attendance-bubble {
+  background: #0f1324;
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  padding: 10px 12px;
+  min-width: 180px;
+  max-width: 72%;
+  display: grid;
+  gap: 6px;
+}
+
+.attendance-message.in .attendance-bubble {
+  background: #111827;
+}
+
+.attendance-message.out .attendance-bubble {
+  background: #0f172a;
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.attendance-message.bot .attendance-bubble {
+  border-color: rgba(124, 58, 237, 0.35);
+}
+
+.attendance-bubble-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.attendance-sender {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.attendance-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.attendance-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.attendance-quick-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.quick-reply-btn {
+  border: 1px solid var(--stroke);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.quick-reply-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.attendance-chat-input {
+  display: grid;
+  gap: 10px;
+}
+
+.attendance-input-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.attendance-side-card {
+  display: grid;
+  gap: 12px;
+}
+
+.side-block {
+  background: var(--panel-2);
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.side-block-title {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.side-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.copy-btn {
+  border: 1px solid var(--stroke);
+  background: #0f1324;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.copy-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .kpi-grid {
   display: grid;
   gap: 16px;
@@ -1680,6 +2030,9 @@ body {
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
+    position: static;
+    height: auto;
+    overflow-y: visible;
   }
 
   .nav {
@@ -1725,6 +2078,19 @@ body {
 
   .chatbot-modal {
     grid-template-columns: 1fr;
+  }
+
+  .attendance-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .attendance-header {
+    align-items: flex-start;
+  }
+
+  .attendance-detail-top {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .flow-title-input {
