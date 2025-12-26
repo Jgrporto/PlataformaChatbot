@@ -1,5 +1,14 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactFlow, { Background, Controls, MiniMap } from "reactflow";
+import ReactFlow, {
+  Background,
+  Controls,
+  MiniMap,
+  addEdge,
+  Handle,
+  Position,
+  useEdgesState,
+  useNodesState
+} from "reactflow";
 
 const VIEWS = [
   {
@@ -29,8 +38,8 @@ const VIEWS = [
   },
   {
     id: "flows",
-    title: "Flows",
-    subtitle: "Em breve: modelos e editor de fluxos."
+    title: "Fluxos de Chatbot",
+    subtitle: "Gerencie e edite fluxos visuais do chatbot."
   },
   {
     id: "followups",
@@ -66,6 +75,30 @@ const MATCH_LABELS = {
   starts_with: "Comeca",
   list: "Lista"
 };
+
+const FLOW_ACTIONS = [
+  { type: "text", label: "Enviar Texto" },
+  { type: "image", label: "Enviar Imagem" },
+  { type: "video", label: "Enviar Video" },
+  { type: "audio", label: "Enviar Audio" },
+  { type: "document", label: "Enviar Documento" },
+  { type: "responses", label: "Respostas" },
+  { type: "list", label: "Enviar Lista" }
+];
+
+const FLOW_ACTION_MAP = FLOW_ACTIONS.reduce((acc, item) => {
+  acc[item.type] = item;
+  return acc;
+}, {});
+
+const FLOW_META_MARKER = "__flow_meta";
+const FLOW_START_NODE_ID = "flow-start";
+
+const FLOW_REACTIVATION_UNITS = [
+  { value: "minutes", label: "Minutos" },
+  { value: "hours", label: "Horas" },
+  { value: "days", label: "Dias" }
+];
 
 const PRESET_VARIABLES = [
   {
@@ -211,41 +244,335 @@ function getMatchLabel(value) {
   return MATCH_LABELS[value] || value || "Custom";
 }
 
-function getStageText(stage) {
-  if (typeof stage === "string") return stage;
-  if (!stage || typeof stage !== "object") return "";
-  return stage.message || stage.text || stage.label || stage.title || "";
+function buildDefaultFlowMeta() {
+  return {
+    __type: FLOW_META_MARKER,
+    version: 1,
+    triggers: {
+      anyMessage: false,
+      keywordMessage: true,
+      firstMessageDay: false,
+      firstMessage: false
+    },
+    reactivation: {
+      value: 0,
+      unit: "minutes"
+    },
+    rules: {
+      allowGroups: false,
+      scheduleOnly: false,
+      ignoreOpen: false,
+      customSignature: false,
+      simulateTyping: true,
+      crmIgnore: false,
+      crmIgnoreAll: false,
+      crmOnly: false,
+      tagIgnore: false,
+      tagIgnoreAll: false,
+      tagOnly: false
+    }
+  };
 }
 
-function buildFlowGraph(flow) {
-  const stages = Array.isArray(flow?.stages) ? flow.stages : [];
-  const nodes = stages.map((stage, index) => {
-    const raw = getStageText(stage);
-    const text = (raw || "").trim();
-    const label = text.length > 90 ? `${text.slice(0, 87)}...` : text;
+function normalizeFlowMeta(meta) {
+  const base = buildDefaultFlowMeta();
+  if (!meta || typeof meta !== "object") return base;
+  const normalized = {
+    ...base,
+    triggers: { ...base.triggers, ...(meta.triggers || {}) },
+    reactivation: { ...base.reactivation, ...(meta.reactivation || {}) },
+    rules: { ...base.rules, ...(meta.rules || {}) }
+  };
+  normalized.__type = FLOW_META_MARKER;
+  normalized.version = base.version;
+  const allowedUnits = new Set(FLOW_REACTIVATION_UNITS.map((unit) => unit.value));
+  if (!allowedUnits.has(normalized.reactivation.unit)) {
+    normalized.reactivation.unit = base.reactivation.unit;
+  }
+  const value = Number(normalized.reactivation.value);
+  normalized.reactivation.value = Number.isNaN(value) || value < 0 ? 0 : value;
+  return normalized;
+}
+
+function splitFlowTriggers(triggers) {
+  const list = Array.isArray(triggers) ? triggers : [];
+  const keywords = [];
+  let meta = null;
+  list.forEach((item) => {
+    if (item && typeof item === "object" && item.__type === FLOW_META_MARKER) {
+      meta = item;
+      return;
+    }
+    if (typeof item === "string") {
+      const value = item.trim();
+      if (value) keywords.push(value);
+    }
+  });
+  return { keywords, meta: normalizeFlowMeta(meta) };
+}
+
+function buildTriggerPayload(keywords, meta) {
+  const list = Array.isArray(keywords) ? keywords : [];
+  const cleaned = list
+    .map((item) => String(item || "").trim())
+    .filter((item) => item);
+  return [...cleaned, normalizeFlowMeta(meta)];
+}
+
+function buildFlowMetaFromState(ruleState, reactivation) {
+  const meta = buildDefaultFlowMeta();
+  meta.triggers = {
+    ...meta.triggers,
+    anyMessage: !!ruleState?.anyMessage,
+    keywordMessage: !!ruleState?.keywordMessage,
+    firstMessageDay: !!ruleState?.firstMessageDay,
+    firstMessage: !!ruleState?.firstMessage
+  };
+  meta.rules = {
+    ...meta.rules,
+    allowGroups: !!ruleState?.allowGroups,
+    scheduleOnly: !!ruleState?.scheduleOnly,
+    ignoreOpen: !!ruleState?.ignoreOpen,
+    customSignature: !!ruleState?.customSignature,
+    simulateTyping: !!ruleState?.simulateTyping,
+    crmIgnore: !!ruleState?.crmIgnore,
+    crmIgnoreAll: !!ruleState?.crmIgnoreAll,
+    crmOnly: !!ruleState?.crmOnly,
+    tagIgnore: !!ruleState?.tagIgnore,
+    tagIgnoreAll: !!ruleState?.tagIgnoreAll,
+    tagOnly: !!ruleState?.tagOnly
+  };
+  meta.reactivation = {
+    value: Number(reactivation?.value) || 0,
+    unit: reactivation?.unit || meta.reactivation.unit
+  };
+  return normalizeFlowMeta(meta);
+}
+
+function buildFlowItemId(prefix) {
+  const seed = Math.random().toString(16).slice(2, 10);
+  return `${prefix}-${seed}`;
+}
+
+function buildDefaultNodeConfig(kind) {
+  if (kind === "text") {
+    return { message: "", saveVar: "", tags: [] };
+  }
+  if (kind === "image" || kind === "video" || kind === "document") {
+    return { fileName: "", caption: "", saveVar: "" };
+  }
+  if (kind === "audio") {
+    return { fileName: "", caption: "", saveVar: "", recording: false };
+  }
+  if (kind === "responses") {
     return {
-      id: `stage-${index}`,
-      position: { x: 0, y: index * 120 },
+      message: "",
+      options: [{ id: buildFlowItemId("option"), label: "" }],
+      matchType: "includes",
+      saveVar: "",
+      fallbackRepeat: false
+    };
+  }
+  if (kind === "list") {
+    return {
+      title: "",
+      description: "",
+      footer: "",
+      buttonText: "",
+      categories: [{ id: buildFlowItemId("category"), title: "", items: [] }],
+      saveVar: "",
+      fallbackRepeat: false
+    };
+  }
+  return { message: "" };
+}
+
+function normalizeOptions(options, fallback) {
+  const list = Array.isArray(options) ? options : [];
+  if (!list.length) return fallback;
+  return list.map((option) => ({
+    id: option?.id || buildFlowItemId("option"),
+    label: option?.label || option?.text || ""
+  }));
+}
+
+function normalizeCategories(categories, fallback) {
+  const list = Array.isArray(categories) ? categories : [];
+  if (!list.length) return fallback;
+  return list.map((category) => ({
+    id: category?.id || buildFlowItemId("category"),
+    title: category?.title || category?.name || "",
+    items: Array.isArray(category?.items)
+      ? category.items.map((item) => ({
+          id: item?.id || buildFlowItemId("item"),
+          title: item?.title || item?.label || item?.name || "",
+          description: item?.description || ""
+        }))
+      : []
+  }));
+}
+
+function normalizeStageConfig(kind, stage) {
+  const base = buildDefaultNodeConfig(kind);
+  if (!stage || typeof stage !== "object") return base;
+  const raw = stage.data && typeof stage.data === "object" ? stage.data : stage;
+  const config = { ...base, ...raw };
+  if (kind === "text" || kind === "responses") {
+    config.message = raw.message || raw.text || raw.label || raw.title || "";
+  }
+  if (kind === "responses") {
+    config.options = normalizeOptions(raw.options, base.options);
+  }
+  if (kind === "list") {
+    config.categories = normalizeCategories(raw.categories, base.categories);
+  }
+  return config;
+}
+
+function getNodeOutputs(kind, config) {
+  if (kind === "responses") {
+    const options = Array.isArray(config?.options) ? config.options : [];
+    return options.map((option, index) => ({
+      id: `option-${option.id || index}`,
+      label: option.label || `Opcao ${index + 1}`
+    }));
+  }
+  if (kind === "list") {
+    const categories = Array.isArray(config?.categories) ? config.categories : [];
+    const outputs = [];
+    categories.forEach((category, cIndex) => {
+      const catLabel = category.title || `Categoria ${cIndex + 1}`;
+      const items = Array.isArray(category.items) ? category.items : [];
+      if (items.length) {
+        items.forEach((item, iIndex) => {
+          const itemLabel = item.title || `Item ${iIndex + 1}`;
+          outputs.push({
+            id: `item-${item.id || `${cIndex}-${iIndex}`}`,
+            label: `${catLabel}: ${itemLabel}`
+          });
+        });
+      } else {
+        outputs.push({
+          id: `category-${category.id || cIndex}`,
+          label: catLabel
+        });
+      }
+    });
+    return outputs.length ? outputs : [{ id: "next", label: "Chamar proximo" }];
+  }
+  return [
+    { id: "next", label: "Chamar proximo" },
+    { id: "reply", label: "Quando responder" }
+  ];
+}
+
+function buildFlowGraphFromStages(stages) {
+  const stageList = Array.isArray(stages) ? stages : [];
+  const nodes = stageList.map((stage, index) => {
+    let kind = "text";
+    let config = buildDefaultNodeConfig("text");
+    if (typeof stage === "string") {
+      config = buildDefaultNodeConfig("text");
+      config.message = stage;
+    } else if (stage && typeof stage === "object") {
+      kind = stage.type || (stage.message ? "text" : "text");
+      config = normalizeStageConfig(kind, stage);
+    }
+    const id = stage?.id || `node-${index + 1}`;
+    const rawPosition = stage?.position && typeof stage.position === "object" ? stage.position : null;
+    const position = {
+      x: Number(rawPosition?.x) || 0,
+      y: Number(rawPosition?.y) || index * 140
+    };
+    return {
+      id,
+      type: "flowAction",
+      position,
       data: {
-        label: (
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>Etapa {index + 1}</div>
-            <div className="device-meta">{label || "Sem conteudo"}</div>
-          </div>
-        )
-      },
-      className: "flow-node"
+        kind,
+        label: FLOW_ACTION_MAP[kind]?.label || "Bloco",
+        config
+      }
     };
   });
 
-  const edges = stages.slice(1).map((_, index) => ({
-    id: `edge-${index}`,
-    source: `stage-${index}`,
-    target: `stage-${index + 1}`,
-    type: "smoothstep"
-  }));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const hasConnections = stageList.some(
+    (stage) => stage && typeof stage === "object" && stage.connections && Object.keys(stage.connections).length
+  );
+  const edges = [];
+
+  if (hasConnections) {
+    stageList.forEach((stage, index) => {
+      const sourceId = nodes[index]?.id;
+      if (!sourceId || !stage || typeof stage !== "object" || !stage.connections) return;
+      Object.entries(stage.connections).forEach(([handle, target]) => {
+        if (!target || !nodeIds.has(target)) return;
+        edges.push({
+          id: `edge-${sourceId}-${handle}-${target}`,
+          source: sourceId,
+          sourceHandle: handle,
+          target,
+          type: "smoothstep"
+        });
+      });
+    });
+  } else {
+    for (let i = 0; i < nodes.length - 1; i += 1) {
+      edges.push({
+        id: `edge-${nodes[i].id}-next-${nodes[i + 1].id}`,
+        source: nodes[i].id,
+        sourceHandle: "next",
+        target: nodes[i + 1].id,
+        type: "smoothstep"
+      });
+    }
+  }
 
   return { nodes, edges };
+}
+
+function sanitizeNodeConfig(kind, config) {
+  const raw = config && typeof config === "object" ? { ...config } : {};
+  if (kind === "responses") {
+    raw.options = normalizeOptions(raw.options, []);
+  }
+  if (kind === "list") {
+    raw.categories = normalizeCategories(raw.categories, []);
+  }
+  return raw;
+}
+
+function serializeFlowStages(nodes, edges) {
+  const stageNodes = nodes.filter((node) => node.id !== FLOW_START_NODE_ID);
+  const connectionsBySource = new Map();
+  edges.forEach((edge) => {
+    if (!edge.source || edge.source === FLOW_START_NODE_ID) return;
+    const handle = edge.sourceHandle || "next";
+    if (!connectionsBySource.has(edge.source)) {
+      connectionsBySource.set(edge.source, {});
+    }
+    connectionsBySource.get(edge.source)[handle] = edge.target;
+  });
+
+  return stageNodes.map((node) => {
+    const kind = node.data?.kind || "text";
+    const config = sanitizeNodeConfig(kind, node.data?.config || {});
+    const stage = {
+      id: node.id,
+      type: kind,
+      position: node.position,
+      data: config
+    };
+    const connections = connectionsBySource.get(node.id);
+    if (connections && Object.keys(connections).length) {
+      stage.connections = connections;
+    }
+    if (kind === "text" || kind === "responses") {
+      stage.message = config.message || "";
+    }
+    return stage;
+  });
 }
 
 function parseJsonArray(value) {
@@ -256,6 +583,56 @@ function parseJsonArray(value) {
     throw new Error("JSON precisa ser uma lista");
   }
   return parsed;
+}
+
+function safeParseJsonArray(value) {
+  try {
+    return parseJsonArray(value);
+  } catch {
+    return [];
+  }
+}
+
+function FlowNameForm({ initialName, confirmLabel, onCancel, onSubmit }) {
+  const [name, setName] = useState(initialName || "");
+  return (
+    <div className="flow-name-form">
+      <input className="input" placeholder="Nome do fluxo" value={name} onChange={(event) => setName(event.target.value)} />
+      <div className="form-row">
+        <button className="secondary" onClick={onCancel}>
+          Cancelar
+        </button>
+        <button className="primary" onClick={() => onSubmit(name)}>
+          {confirmLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function getFlowNodePreview(kind, config) {
+  if (kind === "text") {
+    return config?.message || "Mensagem vazia";
+  }
+  if (kind === "image") {
+    return config?.fileName ? `Imagem: ${config.fileName}` : "Imagem nao definida";
+  }
+  if (kind === "video") {
+    return config?.fileName ? `Video: ${config.fileName}` : "Video nao definido";
+  }
+  if (kind === "audio") {
+    return config?.fileName ? `Audio: ${config.fileName}` : "Audio nao definido";
+  }
+  if (kind === "document") {
+    return config?.fileName ? `Documento: ${config.fileName}` : "Documento nao definido";
+  }
+  if (kind === "responses") {
+    return config?.message || "Pergunta nao definida";
+  }
+  if (kind === "list") {
+    return config?.title || "Lista sem titulo";
+  }
+  return "Bloco configuravel";
 }
 
 function getRangeStart(range) {
@@ -353,7 +730,7 @@ function App() {
     triggers: "[]",
     stages: "[]",
     flowType: "custom",
-    enabled: true,
+    enabled: false,
     deviceId: ""
   });
   const [chatbotQuery, setChatbotQuery] = useState("");
@@ -390,6 +767,7 @@ function App() {
     tagIgnoreAll: false,
     tagOnly: false
   });
+  const [flowReactivation, setFlowReactivation] = useState({ value: 0, unit: "minutes" });
   const [flowCreateOpen, setFlowCreateOpen] = useState(false);
   const [selectedFlowId, setSelectedFlowId] = useState(null);
   const [flowDraft, setFlowDraft] = useState({
@@ -401,6 +779,15 @@ function App() {
     deviceId: ""
   });
   const [flowError, setFlowError] = useState("");
+  const [flowGraphDirty, setFlowGraphDirty] = useState(false);
+  const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState([]);
+  const [flowEdges, setFlowEdges, onFlowEdgesChange] = useEdgesState([]);
+  const [flowInstance, setFlowInstance] = useState(null);
+  const flowNodeIdRef = useRef(1);
+  const flowNodesRef = useRef([]);
+  const flowCanvasRef = useRef(null);
+  const [flowNodeModal, setFlowNodeModal] = useState({ open: false, nodeId: null, kind: "" });
+  const [flowNodeDraft, setFlowNodeDraft] = useState(null);
 
   const [conversations, setConversations] = useState([]);
 
@@ -565,11 +952,8 @@ function App() {
     return filteredAttendances.slice(start, start + ATTENDANCE_PAGE_SIZE);
   }, [filteredAttendances, attendancePage]);
   const flowTriggerList = useMemo(() => {
-    try {
-      return parseJsonArray(flowDraft.triggers);
-    } catch {
-      return [];
-    }
+    const parsed = safeParseJsonArray(flowDraft.triggers);
+    return splitFlowTriggers(parsed).keywords;
   }, [flowDraft.triggers]);
   const flowStageParsed = useMemo(() => {
     try {
@@ -578,10 +962,6 @@ function App() {
       return { stages: [], error: err.message || "JSON invalido" };
     }
   }, [flowDraft.stages]);
-  const flowEditorGraph = useMemo(() => {
-    if (!flowEditorOpen) return { nodes: [], edges: [] };
-    return buildFlowGraph({ stages: flowStageParsed.stages });
-  }, [flowEditorOpen, flowStageParsed.stages]);
   const dashboardStats = useMemo(() => {
     const totalDevices = devices.length;
     const connectedDevices = devices.filter((device) => device.status === "connected").length;
@@ -910,18 +1290,74 @@ function App() {
         deviceId: ""
       });
       setFlowError("");
+      const meta = buildDefaultFlowMeta();
+      setFlowRuleState((prev) => ({
+        ...prev,
+        ...meta.triggers,
+        ...meta.rules
+      }));
+      setFlowReactivation(meta.reactivation);
+      setFlowNodes([]);
+      setFlowEdges([]);
+      setFlowGraphDirty(false);
       return;
     }
+    const { keywords, meta } = splitFlowTriggers(selectedFlow.triggers || []);
     setFlowDraft({
       name: selectedFlow.name || "",
-      triggers: JSON.stringify(selectedFlow.triggers || [], null, 2),
+      triggers: JSON.stringify(buildTriggerPayload(keywords, meta), null, 2),
       stages: JSON.stringify(selectedFlow.stages || [], null, 2),
       flowType: selectedFlow.flowType || "custom",
       enabled: !!selectedFlow.enabled,
       deviceId: selectedFlow.deviceId || ""
     });
+    setFlowRuleState((prev) => ({
+      ...prev,
+      ...meta.triggers,
+      ...meta.rules
+    }));
+    setFlowReactivation(meta.reactivation);
+    const graph = buildFlowGraphFromStages(selectedFlow.stages || []);
+    const startNode = {
+      id: FLOW_START_NODE_ID,
+      type: "flowStart",
+      position: { x: -220, y: 0 },
+      draggable: false,
+      selectable: false,
+      data: { label: "Inicio" }
+    };
+    const startEdge = graph.nodes.length
+      ? [
+          {
+            id: `edge-${FLOW_START_NODE_ID}-${graph.nodes[0].id}`,
+            source: FLOW_START_NODE_ID,
+            sourceHandle: "next",
+            target: graph.nodes[0].id,
+            type: "smoothstep"
+          }
+        ]
+      : [];
+    setFlowNodes([startNode, ...graph.nodes]);
+    setFlowEdges([...startEdge, ...graph.edges]);
+    flowNodeIdRef.current = graph.nodes.length + 1;
+    setFlowGraphDirty(false);
     setFlowError("");
   }, [selectedFlow]);
+
+  useEffect(() => {
+    flowNodesRef.current = flowNodes;
+  }, [flowNodes]);
+
+  useEffect(() => {
+    const meta = buildFlowMetaFromState(flowRuleState, flowReactivation);
+    setFlowDraft((prev) => {
+      const current = safeParseJsonArray(prev.triggers);
+      const { keywords } = splitFlowTriggers(current);
+      const nextValue = JSON.stringify(buildTriggerPayload(keywords, meta), null, 2);
+      if (nextValue === prev.triggers) return prev;
+      return { ...prev, triggers: nextValue };
+    });
+  }, [flowRuleState, flowReactivation]);
 
   useEffect(() => {
     setNewAgentCommand((prev) => ({ ...prev, deviceId: chatbotDeviceId || "" }));
@@ -1214,7 +1650,9 @@ function App() {
   };
 
   const updateFlowTriggers = (next) => {
-    setFlowDraft((prev) => ({ ...prev, triggers: JSON.stringify(next, null, 2) }));
+    const meta = buildFlowMetaFromState(flowRuleState, flowReactivation);
+    const payload = buildTriggerPayload(next, meta);
+    setFlowDraft((prev) => ({ ...prev, triggers: JSON.stringify(payload, null, 2) }));
   };
 
   const addFlowTrigger = () => {
@@ -1233,12 +1671,299 @@ function App() {
     setFlowRuleState((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const getNextFlowNodeId = useCallback(() => {
+    const next = flowNodeIdRef.current;
+    flowNodeIdRef.current += 1;
+    return `node-${next}`;
+  }, []);
+
+  const createFlowNode = useCallback(
+    (kind, position) => {
+      const label = FLOW_ACTION_MAP[kind]?.label || "Bloco";
+      const config = buildDefaultNodeConfig(kind);
+      return {
+        id: getNextFlowNodeId(),
+        type: "flowAction",
+        position,
+        data: {
+          kind,
+          label,
+          config
+        }
+      };
+    },
+    [getNextFlowNodeId]
+  );
+
+  const handleFlowNodesChange = useCallback(
+    (changes) => {
+      onFlowNodesChange(changes);
+      if (changes.some((change) => change.type !== "select")) {
+        setFlowGraphDirty(true);
+      }
+    },
+    [onFlowNodesChange]
+  );
+
+  const handleFlowEdgesChange = useCallback(
+    (changes) => {
+      onFlowEdgesChange(changes);
+      if (changes.some((change) => change.type !== "select")) {
+        setFlowGraphDirty(true);
+      }
+    },
+    [onFlowEdgesChange]
+  );
+
+  const handleFlowConnect = useCallback((params) => {
+    if (!params.source) return;
+    setFlowEdges((eds) => {
+      const filtered = eds.filter(
+        (edge) => !(edge.source === params.source && edge.sourceHandle === params.sourceHandle)
+      );
+      return addEdge({ ...params, type: "smoothstep" }, filtered);
+    });
+    setFlowGraphDirty(true);
+  }, []);
+
+  const handleFlowDragStart = (event, kind) => {
+    event.dataTransfer.setData("application/flow-action", kind);
+    event.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleFlowDragOver = (event) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  };
+
+  const handleFlowDrop = useCallback(
+    (event) => {
+      event.preventDefault();
+      const kind = event.dataTransfer.getData("application/flow-action");
+      if (!kind || !flowInstance || !flowCanvasRef.current) return;
+      const bounds = flowCanvasRef.current.getBoundingClientRect();
+      const position = flowInstance.project({
+        x: event.clientX - bounds.left,
+        y: event.clientY - bounds.top
+      });
+      const node = createFlowNode(kind, position);
+      setFlowNodes((nds) => nds.concat(node));
+      setFlowGraphDirty(true);
+    },
+    [flowInstance, createFlowNode, setFlowNodes]
+  );
+
+  const openFlowNodeModal = useCallback((nodeId) => {
+    const node = flowNodesRef.current.find((item) => item.id === nodeId);
+    if (!node || node.id === FLOW_START_NODE_ID) return;
+    const kind = node.data?.kind || "text";
+    const config = sanitizeNodeConfig(kind, node.data?.config || {});
+    setFlowNodeDraft(JSON.parse(JSON.stringify(config)));
+    setFlowNodeModal({ open: true, nodeId, kind });
+  }, []);
+
+  const closeFlowNodeModal = () => {
+    setFlowNodeModal({ open: false, nodeId: null, kind: "" });
+    setFlowNodeDraft(null);
+  };
+
+  const saveFlowNodeDraft = () => {
+    if (!flowNodeModal.nodeId || !flowNodeDraft) return;
+    setFlowNodes((nodes) =>
+      nodes.map((node) =>
+        node.id === flowNodeModal.nodeId
+          ? { ...node, data: { ...node.data, config: flowNodeDraft } }
+          : node
+      )
+    );
+    setFlowGraphDirty(true);
+    closeFlowNodeModal();
+  };
+
+  const updateFlowNodeDraft = (patch) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      return { ...prev, ...patch };
+    });
+  };
+
+  const handleFlowFileChange = (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    updateFlowNodeDraft({
+      fileName: file.name,
+      fileType: file.type,
+      fileSize: file.size
+    });
+  };
+
+  const addFlowResponseOption = () => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const options = Array.isArray(prev.options) ? prev.options : [];
+      return {
+        ...prev,
+        options: [...options, { id: buildFlowItemId("option"), label: "" }]
+      };
+    });
+  };
+
+  const updateFlowResponseOption = (id, value) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const options = Array.isArray(prev.options) ? prev.options : [];
+      return {
+        ...prev,
+        options: options.map((option) => (option.id === id ? { ...option, label: value } : option))
+      };
+    });
+  };
+
+  const removeFlowResponseOption = (id) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const options = Array.isArray(prev.options) ? prev.options : [];
+      return {
+        ...prev,
+        options: options.filter((option) => option.id !== id)
+      };
+    });
+  };
+
+  const addFlowListCategory = () => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const categories = Array.isArray(prev.categories) ? prev.categories : [];
+      if (categories.length >= 10) return prev;
+      return {
+        ...prev,
+        categories: [...categories, { id: buildFlowItemId("category"), title: "", items: [] }]
+      };
+    });
+  };
+
+  const updateFlowListCategory = (id, value) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const categories = Array.isArray(prev.categories) ? prev.categories : [];
+      return {
+        ...prev,
+        categories: categories.map((category) =>
+          category.id === id ? { ...category, title: value } : category
+        )
+      };
+    });
+  };
+
+  const removeFlowListCategory = (id) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const categories = Array.isArray(prev.categories) ? prev.categories : [];
+      return {
+        ...prev,
+        categories: categories.filter((category) => category.id !== id)
+      };
+    });
+  };
+
+  const addFlowListItem = (categoryId) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const categories = Array.isArray(prev.categories) ? prev.categories : [];
+      return {
+        ...prev,
+        categories: categories.map((category) => {
+          if (category.id !== categoryId) return category;
+          const items = Array.isArray(category.items) ? category.items : [];
+          return {
+            ...category,
+            items: [...items, { id: buildFlowItemId("item"), title: "", description: "" }]
+          };
+        })
+      };
+    });
+  };
+
+  const updateFlowListItem = (categoryId, itemId, field, value) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const categories = Array.isArray(prev.categories) ? prev.categories : [];
+      return {
+        ...prev,
+        categories: categories.map((category) => {
+          if (category.id !== categoryId) return category;
+          const items = Array.isArray(category.items) ? category.items : [];
+          return {
+            ...category,
+            items: items.map((item) =>
+              item.id === itemId ? { ...item, [field]: value } : item
+            )
+          };
+        })
+      };
+    });
+  };
+
+  const removeFlowListItem = (categoryId, itemId) => {
+    setFlowNodeDraft((prev) => {
+      if (!prev) return prev;
+      const categories = Array.isArray(prev.categories) ? prev.categories : [];
+      return {
+        ...prev,
+        categories: categories.map((category) => {
+          if (category.id !== categoryId) return category;
+          const items = Array.isArray(category.items) ? category.items : [];
+          return {
+            ...category,
+            items: items.filter((item) => item.id !== itemId)
+          };
+        })
+      };
+    });
+  };
+
+  const deleteFlowNode = useCallback((nodeId) => {
+    if (!nodeId || nodeId === FLOW_START_NODE_ID) return;
+    setFlowNodes((nodes) => nodes.filter((node) => node.id !== nodeId));
+    setFlowEdges((edges) => edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
+    setFlowGraphDirty(true);
+  }, []);
+
+  const applyFlowStagesJson = () => {
+    const nextStages = flowStageParsed.stages;
+    const graph = buildFlowGraphFromStages(nextStages);
+    const startNode = {
+      id: FLOW_START_NODE_ID,
+      type: "flowStart",
+      position: { x: -220, y: 0 },
+      draggable: false,
+      selectable: false,
+      data: { label: "Inicio" }
+    };
+    const startEdge = graph.nodes.length
+      ? [
+          {
+            id: `edge-${FLOW_START_NODE_ID}-${graph.nodes[0].id}`,
+            source: FLOW_START_NODE_ID,
+            sourceHandle: "next",
+            target: graph.nodes[0].id,
+            type: "smoothstep"
+          }
+        ]
+      : [];
+    setFlowNodes([startNode, ...graph.nodes]);
+    setFlowEdges([...startEdge, ...graph.edges]);
+    flowNodeIdRef.current = graph.nodes.length + 1;
+    setFlowGraphDirty(true);
+  };
+
   const openFlowEditor = (flow) => {
     setSelectedFlowId(flow.id);
     setFlowEditorOpen(true);
     setFlowTriggerInput("");
     setFlowJsonOpen(false);
     setFlowError("");
+    setFlowGraphDirty(false);
   };
 
   const closeFlowEditor = () => {
@@ -1608,7 +2333,7 @@ function App() {
         })
       });
       setNewFlow((prev) => ({ ...prev, name: "", triggers: "[]", stages: "[]" }));
-      await loadChatbot();
+      await loadFlows();
       return true;
     } catch (err) {
       alert(err.message || "Erro ao criar fluxo.");
@@ -1620,7 +2345,7 @@ function App() {
     if (!selectedFlow) return;
     try {
       const triggers = parseJsonArray(flowDraft.triggers);
-      const stages = parseJsonArray(flowDraft.stages);
+      const stages = serializeFlowStages(flowNodes, flowEdges);
       await api(`/api/chatbot/flows/${selectedFlow.id}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -1633,7 +2358,9 @@ function App() {
         })
       });
       setFlowError("");
-      await loadChatbot();
+      setFlowDraft((prev) => ({ ...prev, stages: JSON.stringify(stages, null, 2) }));
+      setFlowGraphDirty(false);
+      await loadFlows();
       return true;
     } catch (err) {
       setFlowError(err.message || "Erro ao salvar fluxo.");
@@ -1645,10 +2372,105 @@ function App() {
     if (!confirm("Excluir fluxo?")) return;
     try {
       await api(`/api/chatbot/flows/${id}`, { method: "DELETE" });
-      await loadChatbot();
+      await loadFlows();
     } catch (err) {
       alert(err.message || "Erro ao excluir fluxo.");
     }
+  };
+
+  const buildFlowPayload = (flow, overrides = {}) => {
+    const payload = {
+      name: overrides.name ?? flow?.name ?? "",
+      triggers: Array.isArray(overrides.triggers ?? flow?.triggers) ? overrides.triggers ?? flow?.triggers : [],
+      stages: Array.isArray(overrides.stages ?? flow?.stages) ? overrides.stages ?? flow?.stages : [],
+      flowType: overrides.flowType ?? flow?.flowType ?? "custom",
+      enabled: overrides.enabled ?? flow?.enabled ?? false,
+      deviceId: overrides.deviceId ?? flow?.deviceId ?? null
+    };
+    return payload;
+  };
+
+  const closeDetailModal = () => {
+    setDetailModal({ open: false, title: "", content: null });
+  };
+
+  const updateFlowPayload = async (flow, payload) => {
+    if (!flow?.id) return;
+    await api(`/api/chatbot/flows/${flow.id}`, { method: "PUT", body: JSON.stringify(payload) });
+    await loadFlows();
+  };
+
+  const toggleFlowEnabled = async (flow) => {
+    try {
+      const payload = buildFlowPayload(flow, { enabled: !flow.enabled });
+      await updateFlowPayload(flow, payload);
+    } catch (err) {
+      alert(err.message || "Erro ao atualizar fluxo.");
+    }
+  };
+
+  const renameFlow = async (flow, name) => {
+    const trimmed = (name || "").trim();
+    if (!trimmed) {
+      alert("Nome do fluxo obrigatorio.");
+      return;
+    }
+    try {
+      const payload = buildFlowPayload(flow, { name: trimmed });
+      await updateFlowPayload(flow, payload);
+      closeDetailModal();
+    } catch (err) {
+      alert(err.message || "Erro ao renomear fluxo.");
+    }
+  };
+
+  const duplicateFlow = async (flow, name) => {
+    const trimmed = (name || "").trim();
+    if (!trimmed) {
+      alert("Nome do fluxo obrigatorio.");
+      return;
+    }
+    try {
+      const payload = buildFlowPayload(flow, { name: trimmed });
+      await api("/api/chatbot/flows", { method: "POST", body: JSON.stringify(payload) });
+      await loadFlows();
+      closeDetailModal();
+    } catch (err) {
+      alert(err.message || "Erro ao duplicar fluxo.");
+    }
+  };
+
+  const openFlowRenameModal = (flow) => {
+    if (!flow) return;
+    setDetailModal({
+      open: true,
+      title: "Renomear fluxo",
+      content: (
+        <FlowNameForm
+          initialName={flow.name || ""}
+          confirmLabel="Renomear"
+          onCancel={closeDetailModal}
+          onSubmit={(value) => renameFlow(flow, value)}
+        />
+      )
+    });
+  };
+
+  const openFlowDuplicateModal = (flow) => {
+    if (!flow) return;
+    const fallbackName = flow.name ? `${flow.name} copia` : "Fluxo copia";
+    setDetailModal({
+      open: true,
+      title: "Duplicar fluxo",
+      content: (
+        <FlowNameForm
+          initialName={fallbackName}
+          confirmLabel="Duplicar"
+          onCancel={closeDetailModal}
+          onSubmit={(value) => duplicateFlow(flow, value)}
+        />
+      )
+    });
   };
 
   const applyAttendanceFilters = () => {
@@ -1792,6 +2614,73 @@ function App() {
     }
   };
 
+  const FlowStartNode = ({ data }) => {
+    return (
+      <div className="flow-node flow-node-start">
+        <div className="flow-node-title">{data?.label || "Inicio"}</div>
+        <div className="flow-node-meta">Entrada principal</div>
+        <Handle type="source" position={Position.Right} id="next" className="flow-handle" />
+      </div>
+    );
+  };
+
+  const FlowActionNode = ({ id, data }) => {
+    const kind = data?.kind || "text";
+    const config = data?.config || {};
+    const outputs = getNodeOutputs(kind, config);
+    const preview = getFlowNodePreview(kind, config);
+    const saveVar = config.saveVar || "";
+    const outputTop = 44;
+    const outputGap = 18;
+
+    return (
+      <div className="flow-node flow-node-action">
+        <div className="flow-node-head">
+          <div className="flow-node-title">{data?.label || "Bloco"}</div>
+          <div className="flow-node-actions">
+            <button className="flow-node-btn" onClick={() => openFlowNodeModal(id)}>
+              Editar
+            </button>
+            <button className="flow-node-btn danger" onClick={() => deleteFlowNode(id)}>
+              Excluir
+            </button>
+          </div>
+        </div>
+        <div className="flow-node-preview">{preview}</div>
+        {saveVar ? <div className="flow-node-meta">Salvar em: {saveVar}</div> : null}
+        {kind === "responses" ? (
+          <div className="flow-node-meta">{config.options?.length || 0} opcoes</div>
+        ) : null}
+        {kind === "list" ? (
+          <div className="flow-node-meta">{config.categories?.length || 0} categorias</div>
+        ) : null}
+        <Handle type="target" position={Position.Left} id="in" className="flow-handle" />
+        {outputs.map((output, index) => {
+          const top = outputTop + index * outputGap;
+          return (
+            <React.Fragment key={output.id}>
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={output.id}
+                className="flow-handle"
+                style={{ top }}
+              />
+              <span className="flow-handle-label" style={{ top: top - 6 }}>
+                {output.label}
+              </span>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const flowNodeTypes = {
+    flowAction: FlowActionNode,
+    flowStart: FlowStartNode
+  };
+
   const filteredDevices = devices.filter((device) => {
     const text = `${device.name || ""} ${device.status || ""} ${device.devicePhone || ""}`
       .toLowerCase()
@@ -1816,6 +2705,11 @@ function App() {
       "Sem agente"
     : "Sem agente";
   const attendanceClosed = attendanceDetails?.status === "closed";
+  const flowNodeCategories = Array.isArray(flowNodeDraft?.categories) ? flowNodeDraft.categories : [];
+  const flowNodeItemsCount = flowNodeCategories.reduce((acc, category) => {
+    const count = Array.isArray(category.items) ? category.items.length : 0;
+    return acc + count;
+  }, 0);
 
   return (
     <div className="app">
@@ -2468,12 +3362,95 @@ function App() {
         </section>
 
         <section className={`view ${activeView === "flows" ? "active" : ""}`}>
-          <div className="card">
-            <div className="card-head">
-              <h3>Flows (em breve)</h3>
+          <div className="card flow-list-card">
+            <div className="card-head flow-list-head">
+              <div className="flow-list-title">
+                <h3>Fluxos de Chatbot</h3>
+                <span className="badge">Versao Beta</span>
+              </div>
+              <div className="form-row">
+                <select
+                  className="select"
+                  value={chatbotDeviceId}
+                  onChange={(event) => setChatbotDeviceId(event.target.value)}
+                >
+                  <option value="">Todos os Dispositivos</option>
+                  {deviceOptions.map((device) => (
+                    <option key={device.value} value={device.value}>
+                      {device.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <div className="empty-state">
-              Aguardando o modelo para montar a nova aba de flows.
+            <div className="flow-list-grid">
+              <button className="flow-card flow-create-card" onClick={() => setFlowCreateOpen(true)} type="button">
+                <div className="flow-create-icon">+</div>
+                <div className="flow-create-text">Criar novo fluxo</div>
+              </button>
+              {flows.length === 0 ? (
+                <div className="flow-card flow-empty-card">
+                  <div className="flow-empty-text">Nenhum fluxo cadastrado.</div>
+                  <div className="device-meta">Crie um fluxo para comecar a desenhar a logica.</div>
+                </div>
+              ) : (
+                flows.map((flow) => {
+                  const { keywords } = splitFlowTriggers(flow.triggers || []);
+                  return (
+                    <div
+                      key={flow.id}
+                      className="flow-card flow-card-item"
+                      onClick={() => openFlowEditor(flow)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") openFlowEditor(flow);
+                      }}
+                    >
+                      <div className="flow-card-head">
+                        <div className="flow-card-info">
+                          <div className="flow-bot-icon">BOT</div>
+                          <div>
+                            <div className="flow-title">{flow.name || "Sem nome"}</div>
+                            <div className="flow-card-meta">
+                              <span className={`pill ${flow.enabled ? "success" : "danger"}`}>
+                                {flow.enabled ? "Ativo" : "Inativo"}
+                              </span>
+                              <span className="device-meta">
+                                {keywords.length} gatilhos • {(flow.stages || []).length} blocos
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flow-card-actions" onClick={(event) => event.stopPropagation()}>
+                          <label className="flow-card-toggle">
+                            <input
+                              type="checkbox"
+                              checked={!!flow.enabled}
+                              onChange={() => toggleFlowEnabled(flow)}
+                            />
+                            <span className="flow-card-slider" />
+                          </label>
+                          <details className="flow-card-menu">
+                            <summary className="icon">...</summary>
+                            <div className="flow-card-menu-list">
+                              <button type="button" onClick={() => openFlowRenameModal(flow)}>
+                                Renomear
+                              </button>
+                              <button type="button" onClick={() => openFlowDuplicateModal(flow)}>
+                                Duplicar
+                              </button>
+                              <button type="button" className="flow-menu-danger" onClick={() => deleteFlow(flow.id)}>
+                                Excluir
+                              </button>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </section>
@@ -2994,192 +3971,233 @@ function App() {
             </div>
             <div className="flow-editor-body">
               <aside className="flow-editor-sidebar">
-                <div className="flow-section">
-                  <div className="flow-section-head">
+                <details className="flow-dropdown" open>
+                  <summary className="flow-section-head">
                     <span className="flow-dot green" />
                     Acionamentos
+                  </summary>
+                  <div className="flow-section-body">
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.anyMessage}
+                        onChange={() => toggleFlowRule("anyMessage")}
+                      />
+                      <span>Quando qualquer mensagem e recebida.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.keywordMessage}
+                        onChange={() => toggleFlowRule("keywordMessage")}
+                      />
+                      <span>Quando a mensagem contem palavras-chave.</span>
+                    </label>
+                    <div className="flow-tags">
+                      {flowTriggerList.length === 0 ? (
+                        <div className="device-meta">Nenhuma palavra-chave configurada.</div>
+                      ) : (
+                        flowTriggerList.map((trigger) => (
+                          <span key={trigger} className="flow-tag">
+                            {trigger}
+                            <button className="tag-close" onClick={() => removeFlowTrigger(trigger)}>
+                              x
+                            </button>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    <div className="flow-tag-input">
+                      <input
+                        className="input"
+                        placeholder="Digite uma palavra chave"
+                        value={flowTriggerInput}
+                        onChange={(event) => setFlowTriggerInput(event.target.value)}
+                        disabled={!flowRuleState.keywordMessage}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            addFlowTrigger();
+                          }
+                        }}
+                      />
+                      <button className="secondary" onClick={addFlowTrigger} disabled={!flowRuleState.keywordMessage}>
+                        Adicionar
+                      </button>
+                    </div>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.firstMessageDay}
+                        onChange={() => toggleFlowRule("firstMessageDay")}
+                      />
+                      <span>Primeira mensagem do cliente no dia.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.firstMessage}
+                        onChange={() => toggleFlowRule("firstMessage")}
+                      />
+                      <span>Primeira mensagem do cliente.</span>
+                    </label>
+                    <div className="flow-reactivation">
+                      <div className="flow-reactivation-title">Intervalo de reativacao</div>
+                      <div className="flow-reactivation-row">
+                        <input
+                          className="input"
+                          type="number"
+                          min="0"
+                          value={flowReactivation.value}
+                          onChange={(event) =>
+                            setFlowReactivation((prev) => ({
+                              ...prev,
+                              value: Number(event.target.value)
+                            }))
+                          }
+                        />
+                        <select
+                          className="select"
+                          value={flowReactivation.unit}
+                          onChange={(event) =>
+                            setFlowReactivation((prev) => ({ ...prev, unit: event.target.value }))
+                          }
+                        >
+                          {FLOW_REACTIVATION_UNITS.map((unit) => (
+                            <option key={unit.value} value={unit.value}>
+                              {unit.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="device-meta">0 = sem bloqueio</div>
+                    </div>
                   </div>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.anyMessage}
-                      onChange={() => toggleFlowRule("anyMessage")}
-                    />
-                    <span>Quando qualquer mensagem e recebida.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.keywordMessage}
-                      onChange={() => toggleFlowRule("keywordMessage")}
-                    />
-                    <span>Quando a mensagem contem palavras-chave.</span>
-                  </label>
-                  <div className="flow-tags">
-                    {flowTriggerList.length === 0 ? (
-                      <div className="device-meta">Nenhuma palavra-chave configurada.</div>
-                    ) : (
-                      flowTriggerList.map((trigger) => (
-                        <span key={trigger} className="flow-tag">
-                          {trigger}
-                          <button className="tag-close" onClick={() => removeFlowTrigger(trigger)}>
-                            x
-                          </button>
-                        </span>
-                      ))
-                    )}
-                  </div>
-                  <div className="flow-tag-input">
-                    <input
-                      className="input"
-                      placeholder="Digite uma palavra chave"
-                      value={flowTriggerInput}
-                      onChange={(event) => setFlowTriggerInput(event.target.value)}
-                      disabled={!flowRuleState.keywordMessage}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          addFlowTrigger();
-                        }
-                      }}
-                    />
-                    <button className="secondary" onClick={addFlowTrigger} disabled={!flowRuleState.keywordMessage}>
-                      Adicionar
-                    </button>
-                  </div>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.firstMessageDay}
-                      onChange={() => toggleFlowRule("firstMessageDay")}
-                    />
-                    <span>Primeira mensagem do cliente no dia.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.firstMessage}
-                      onChange={() => toggleFlowRule("firstMessage")}
-                    />
-                    <span>Primeira mensagem do cliente.</span>
-                  </label>
-                </div>
+                </details>
 
-                <div className="flow-section">
-                  <div className="flow-section-head">
+                <details className="flow-dropdown" open>
+                  <summary className="flow-section-head">
                     <span className="flow-dot amber" />
-                    Blocos de acoes (7)
+                    Blocos de acoes ({FLOW_ACTIONS.length})
+                  </summary>
+                  <div className="flow-section-body">
+                    <div className="flow-action-grid">
+                      {FLOW_ACTIONS.map((action) => (
+                        <div
+                          key={action.type}
+                          className="flow-action-card"
+                          draggable
+                          onDragStart={(event) => handleFlowDragStart(event, action.type)}
+                        >
+                          {action.label}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="device-meta">Arraste um bloco para o canvas.</div>
                   </div>
-                  <div className="flow-action-grid">
-                    <div className="flow-action-card">Enviar Texto</div>
-                    <div className="flow-action-card">Enviar Imagem</div>
-                    <div className="flow-action-card">Enviar Video</div>
-                    <div className="flow-action-card">Enviar Audio</div>
-                    <div className="flow-action-card">Enviar Documento</div>
-                    <div className="flow-action-card">Respostas</div>
-                    <div className="flow-action-card">Enviar Lista</div>
-                  </div>
-                </div>
+                </details>
 
-                <div className="flow-section">
-                  <div className="flow-section-head">
+                <details className="flow-dropdown" open>
+                  <summary className="flow-section-head">
                     <span className="flow-dot purple" />
                     Regras
+                  </summary>
+                  <div className="flow-section-body">
+                    <div className="flow-subhead">Regras gerais:</div>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.allowGroups}
+                        onChange={() => toggleFlowRule("allowGroups")}
+                      />
+                      <span>Permitir responder a grupos.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.scheduleOnly}
+                        onChange={() => toggleFlowRule("scheduleOnly")}
+                      />
+                      <span>Permitir respostas apenas em dias e horarios definidos.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.ignoreOpen}
+                        onChange={() => toggleFlowRule("ignoreOpen")}
+                      />
+                      <span>Nao responder se a conversa estiver aberta.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.customSignature}
+                        onChange={() => toggleFlowRule("customSignature")}
+                      />
+                      <span>Personalizar ou desativar assinatura.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.simulateTyping}
+                        onChange={() => toggleFlowRule("simulateTyping")}
+                      />
+                      <span>Simular que esta digitando ou gravando audio.</span>
+                    </label>
+
+                    <div className="flow-subhead">Regras de CRM:</div>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.crmIgnore}
+                        onChange={() => toggleFlowRule("crmIgnore")}
+                      />
+                      <span>Nao responder se o contato estiver em um CRM.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.crmIgnoreAll}
+                        onChange={() => toggleFlowRule("crmIgnoreAll")}
+                      />
+                      <span>Nao responder os CRMs.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.crmOnly}
+                        onChange={() => toggleFlowRule("crmOnly")}
+                      />
+                      <span>Responder apenas os CRMs.</span>
+                    </label>
+
+                    <div className="flow-subhead">Regras de etiqueta:</div>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.tagIgnore}
+                        onChange={() => toggleFlowRule("tagIgnore")}
+                      />
+                      <span>Nao responder se o contato estiver etiquetado.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.tagIgnoreAll}
+                        onChange={() => toggleFlowRule("tagIgnoreAll")}
+                      />
+                      <span>Nao responder as etiquetas.</span>
+                    </label>
+                    <label className="flow-toggle">
+                      <input
+                        type="checkbox"
+                        checked={flowRuleState.tagOnly}
+                        onChange={() => toggleFlowRule("tagOnly")}
+                      />
+                      <span>Responder apenas as etiquetas.</span>
+                    </label>
                   </div>
-                  <div className="flow-subhead">Regras gerais:</div>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.allowGroups}
-                      onChange={() => toggleFlowRule("allowGroups")}
-                    />
-                    <span>Permitir responder a grupos.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.scheduleOnly}
-                      onChange={() => toggleFlowRule("scheduleOnly")}
-                    />
-                    <span>Permitir respostas apenas em dias e horarios definidos.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.ignoreOpen}
-                      onChange={() => toggleFlowRule("ignoreOpen")}
-                    />
-                    <span>Nao responder se a conversa estiver aberta.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.customSignature}
-                      onChange={() => toggleFlowRule("customSignature")}
-                    />
-                    <span>Personalizar ou desativar assinatura.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.simulateTyping}
-                      onChange={() => toggleFlowRule("simulateTyping")}
-                    />
-                    <span>Simular que esta digitando ou gravando audio.</span>
-                  </label>
-
-                  <div className="flow-subhead">Regras de CRM:</div>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.crmIgnore}
-                      onChange={() => toggleFlowRule("crmIgnore")}
-                    />
-                    <span>Nao responder se o contato estiver em um CRM.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.crmIgnoreAll}
-                      onChange={() => toggleFlowRule("crmIgnoreAll")}
-                    />
-                    <span>Nao responder os CRMs.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.crmOnly}
-                      onChange={() => toggleFlowRule("crmOnly")}
-                    />
-                    <span>Responder apenas os CRMs.</span>
-                  </label>
-
-                  <div className="flow-subhead">Regras de etiqueta:</div>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.tagIgnore}
-                      onChange={() => toggleFlowRule("tagIgnore")}
-                    />
-                    <span>Nao responder se o contato estiver etiquetado.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.tagIgnoreAll}
-                      onChange={() => toggleFlowRule("tagIgnoreAll")}
-                    />
-                    <span>Nao responder as etiquetas.</span>
-                  </label>
-                  <label className="flow-toggle">
-                    <input
-                      type="checkbox"
-                      checked={flowRuleState.tagOnly}
-                      onChange={() => toggleFlowRule("tagOnly")}
-                    />
-                    <span>Responder apenas as etiquetas.</span>
-                  </label>
-                </div>
+                </details>
 
                 <div className="flow-section">
                   <button className="ghost" onClick={() => setFlowJsonOpen((prev) => !prev)}>
@@ -3196,18 +4214,329 @@ function App() {
                         }
                       />
                       {flowStageParsed.error ? <div className="hint">{flowStageParsed.error}</div> : null}
+                      <div className="form-row">
+                        <button
+                          className="secondary"
+                          onClick={applyFlowStagesJson}
+                          disabled={!!flowStageParsed.error}
+                        >
+                          Aplicar no canvas
+                        </button>
+                      </div>
                     </div>
                   ) : null}
                   {flowError ? <div className="hint">{flowError}</div> : null}
                 </div>
               </aside>
 
-              <div className="flow-editor-canvas">
-                <ReactFlow nodes={flowEditorGraph.nodes} edges={flowEditorGraph.edges} fitView>
+              <div className="flow-editor-canvas" ref={flowCanvasRef}>
+                <ReactFlow
+                  nodes={flowNodes}
+                  edges={flowEdges}
+                  onNodesChange={handleFlowNodesChange}
+                  onEdgesChange={handleFlowEdgesChange}
+                  onConnect={handleFlowConnect}
+                  nodeTypes={flowNodeTypes}
+                  onInit={setFlowInstance}
+                  onDrop={handleFlowDrop}
+                  onDragOver={handleFlowDragOver}
+                  fitView
+                  panOnScroll
+                >
                   <Background variant="dots" gap={24} size={1} color="rgba(148, 163, 184, 0.2)" />
                   <Controls />
                   <MiniMap />
                 </ReactFlow>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {flowNodeModal.open && flowNodeDraft ? (
+        <div
+          className="modal"
+          onClick={(event) => {
+            if (event.target.classList.contains("modal")) closeFlowNodeModal();
+          }}
+        >
+          <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{FLOW_ACTION_MAP[flowNodeModal.kind]?.label || "Bloco"}</h3>
+              <button className="icon" onClick={closeFlowNodeModal}>
+                X
+              </button>
+            </div>
+            <div className="modal-body flow-node-modal">
+              {flowNodeModal.kind === "text" ? (
+                <>
+                  <textarea
+                    className="textarea"
+                    placeholder="Mensagem"
+                    value={flowNodeDraft.message || ""}
+                    onChange={(event) => updateFlowNodeDraft({ message: event.target.value })}
+                  />
+                  <div className="form-row">
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={() =>
+                        updateFlowNodeDraft({
+                          message: `${flowNodeDraft.message || ""} {#nome}`.trim()
+                        })
+                      }
+                    >
+                      #Tag
+                    </button>
+                  </div>
+                  <input
+                    className="input"
+                    placeholder="Salvar resposta em variavel"
+                    value={flowNodeDraft.saveVar || ""}
+                    onChange={(event) => updateFlowNodeDraft({ saveVar: event.target.value })}
+                  />
+                </>
+              ) : null}
+
+              {["image", "video", "document"].includes(flowNodeModal.kind) ? (
+                <>
+                  <input
+                    className="input"
+                    type="file"
+                    accept={
+                      flowNodeModal.kind === "image"
+                        ? "image/*"
+                        : flowNodeModal.kind === "video"
+                        ? "video/*"
+                        : "*"
+                    }
+                    onChange={handleFlowFileChange}
+                  />
+                  {flowNodeDraft.fileName ? <div className="device-meta">{flowNodeDraft.fileName}</div> : null}
+                  <input
+                    className="input"
+                    placeholder="Legenda"
+                    value={flowNodeDraft.caption || ""}
+                    onChange={(event) => updateFlowNodeDraft({ caption: event.target.value })}
+                  />
+                  <input
+                    className="input"
+                    placeholder="Salvar resposta em variavel"
+                    value={flowNodeDraft.saveVar || ""}
+                    onChange={(event) => updateFlowNodeDraft({ saveVar: event.target.value })}
+                  />
+                </>
+              ) : null}
+
+              {flowNodeModal.kind === "audio" ? (
+                <>
+                  <input className="input" type="file" accept="audio/*" onChange={handleFlowFileChange} />
+                  {flowNodeDraft.fileName ? <div className="device-meta">{flowNodeDraft.fileName}</div> : null}
+                  <div className="form-row">
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={() =>
+                        updateFlowNodeDraft({ recording: !flowNodeDraft.recording })
+                      }
+                    >
+                      {flowNodeDraft.recording ? "Parar gravacao" : "Gravar audio"}
+                    </button>
+                  </div>
+                  <input
+                    className="input"
+                    placeholder="Salvar resposta em variavel"
+                    value={flowNodeDraft.saveVar || ""}
+                    onChange={(event) => updateFlowNodeDraft({ saveVar: event.target.value })}
+                  />
+                </>
+              ) : null}
+
+              {flowNodeModal.kind === "responses" ? (
+                <>
+                  <textarea
+                    className="textarea"
+                    placeholder="Mensagem principal"
+                    value={flowNodeDraft.message || ""}
+                    onChange={(event) => updateFlowNodeDraft({ message: event.target.value })}
+                  />
+                  <select
+                    className="select"
+                    value={flowNodeDraft.matchType || "includes"}
+                    onChange={(event) => updateFlowNodeDraft({ matchType: event.target.value })}
+                  >
+                    <option value="includes">Contem</option>
+                    <option value="exact">Igual</option>
+                    <option value="starts_with">Comeca com</option>
+                    <option value="ends_with">Termina com</option>
+                  </select>
+                  <div className="flow-option-list">
+                    {(flowNodeDraft.options || []).map((option, index) => (
+                      <div key={option.id} className="flow-option-row">
+                        <input
+                          className="input"
+                          placeholder={`Opcao ${index + 1}`}
+                          value={option.label || ""}
+                          onChange={(event) => updateFlowResponseOption(option.id, event.target.value)}
+                        />
+                        <button
+                          className="icon"
+                          type="button"
+                          onClick={() => removeFlowResponseOption(option.id)}
+                        >
+                          X
+                        </button>
+                      </div>
+                    ))}
+                    <button className="secondary" type="button" onClick={addFlowResponseOption}>
+                      Adicionar opcao
+                    </button>
+                  </div>
+                  <input
+                    className="input"
+                    placeholder="Salvar resposta em variavel"
+                    value={flowNodeDraft.saveVar || ""}
+                    onChange={(event) => updateFlowNodeDraft({ saveVar: event.target.value })}
+                  />
+                  <label className="flow-switch inline">
+                    <span>Repetir bloco de perguntas</span>
+                    <input
+                      type="checkbox"
+                      checked={!!flowNodeDraft.fallbackRepeat}
+                      onChange={(event) => updateFlowNodeDraft({ fallbackRepeat: event.target.checked })}
+                    />
+                  </label>
+                </>
+              ) : null}
+
+              {flowNodeModal.kind === "list" ? (
+                <>
+                  <input
+                    className="input"
+                    placeholder="Titulo (opcional)"
+                    value={flowNodeDraft.title || ""}
+                    onChange={(event) => updateFlowNodeDraft({ title: event.target.value })}
+                  />
+                  <textarea
+                    className="textarea"
+                    placeholder="Descricao"
+                    value={flowNodeDraft.description || ""}
+                    onChange={(event) => updateFlowNodeDraft({ description: event.target.value })}
+                  />
+                  <input
+                    className="input"
+                    placeholder="Rodape"
+                    value={flowNodeDraft.footer || ""}
+                    onChange={(event) => updateFlowNodeDraft({ footer: event.target.value })}
+                  />
+                  <input
+                    className="input"
+                    placeholder="Texto do botao"
+                    value={flowNodeDraft.buttonText || ""}
+                    onChange={(event) => updateFlowNodeDraft({ buttonText: event.target.value })}
+                  />
+                  <div className="flow-list-stats">
+                    <span>Categorias: {flowNodeCategories.length}</span>
+                    <span>Produtos: {flowNodeItemsCount}</span>
+                  </div>
+                  <div className="flow-list-categories">
+                    {flowNodeCategories.map((category, index) => (
+                      <div key={category.id} className="flow-category-card">
+                        <div className="flow-category-head">
+                          <input
+                            className="input"
+                            placeholder={`Categoria ${index + 1}`}
+                            value={category.title || ""}
+                            onChange={(event) => updateFlowListCategory(category.id, event.target.value)}
+                          />
+                          <button
+                            className="icon"
+                            type="button"
+                            onClick={() => removeFlowListCategory(category.id)}
+                          >
+                            X
+                          </button>
+                        </div>
+                        <div className="flow-category-items">
+                          {Array.isArray(category.items) && category.items.length ? (
+                            category.items.map((item) => (
+                              <div key={item.id} className="flow-item-row">
+                                <input
+                                  className="input"
+                                  placeholder="Produto"
+                                  value={item.title || ""}
+                                  onChange={(event) =>
+                                    updateFlowListItem(category.id, item.id, "title", event.target.value)
+                                  }
+                                />
+                                <input
+                                  className="input"
+                                  placeholder="Descricao"
+                                  value={item.description || ""}
+                                  onChange={(event) =>
+                                    updateFlowListItem(
+                                      category.id,
+                                      item.id,
+                                      "description",
+                                      event.target.value
+                                    )
+                                  }
+                                />
+                                <button
+                                  className="icon"
+                                  type="button"
+                                  onClick={() => removeFlowListItem(category.id, item.id)}
+                                >
+                                  X
+                                </button>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="device-meta">Sem produtos nesta categoria.</div>
+                          )}
+                        </div>
+                        <button
+                          className="secondary"
+                          type="button"
+                          onClick={() => addFlowListItem(category.id)}
+                        >
+                          Adicionar produto
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={addFlowListCategory}
+                    disabled={flowNodeCategories.length >= 10}
+                  >
+                    Adicionar categoria
+                  </button>
+                  <input
+                    className="input"
+                    placeholder="Salvar resposta em variavel"
+                    value={flowNodeDraft.saveVar || ""}
+                    onChange={(event) => updateFlowNodeDraft({ saveVar: event.target.value })}
+                  />
+                  <label className="flow-switch inline">
+                    <span>Repetir bloco de listas</span>
+                    <input
+                      type="checkbox"
+                      checked={!!flowNodeDraft.fallbackRepeat}
+                      onChange={(event) => updateFlowNodeDraft({ fallbackRepeat: event.target.checked })}
+                    />
+                  </label>
+                </>
+              ) : null}
+
+              <div className="form-row">
+                <button className="secondary" type="button" onClick={closeFlowNodeModal}>
+                  Cancelar
+                </button>
+                <button className="primary" type="button" onClick={saveFlowNodeDraft}>
+                  Salvar
+                </button>
               </div>
             </div>
           </div>
@@ -3520,48 +4849,54 @@ Senha: {#senha}`}</pre>
               </button>
             </div>
             <div className="modal-body">
-              <div className="form-row">
-                <input
-                  className="input"
-                  placeholder="Nome do fluxo"
-                  value={newFlow.name}
-                  onChange={(event) => setNewFlow((prev) => ({ ...prev, name: event.target.value }))}
-                />
-                <select
-                  className="select"
-                  value={newFlow.deviceId}
-                  onChange={(event) => setNewFlow((prev) => ({ ...prev, deviceId: event.target.value }))}
-                >
-                  <option value="">Todos os Dispositivos</option>
-                  {deviceOptions.map((device) => (
-                    <option key={device.value} value={device.value}>
-                      {device.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <label className="flow-switch inline">
-                <span>Ativo</span>
-                <input
-                  type="checkbox"
-                  checked={newFlow.enabled}
-                  onChange={(event) => setNewFlow((prev) => ({ ...prev, enabled: event.target.checked }))}
-                />
-              </label>
-              <div className="form-row">
-                <textarea
-                  className="textarea"
-                  placeholder="Gatilhos JSON"
-                  value={newFlow.triggers}
-                  onChange={(event) => setNewFlow((prev) => ({ ...prev, triggers: event.target.value }))}
-                />
-                <textarea
-                  className="textarea"
-                  placeholder="Etapas JSON"
-                  value={newFlow.stages}
-                  onChange={(event) => setNewFlow((prev) => ({ ...prev, stages: event.target.value }))}
-                />
-              </div>
+              <input
+                className="input"
+                placeholder="Nome do fluxo"
+                value={newFlow.name}
+                onChange={(event) => setNewFlow((prev) => ({ ...prev, name: event.target.value }))}
+              />
+              <div className="device-meta">O fluxo sera criado inativo por padrao.</div>
+              <details className="flow-advanced">
+                <summary>Avancado</summary>
+                <div className="flow-advanced-body">
+                  <div className="form-row">
+                    <select
+                      className="select"
+                      value={newFlow.deviceId}
+                      onChange={(event) => setNewFlow((prev) => ({ ...prev, deviceId: event.target.value }))}
+                    >
+                      <option value="">Todos os Dispositivos</option>
+                      {deviceOptions.map((device) => (
+                        <option key={device.value} value={device.value}>
+                          {device.label}
+                        </option>
+                      ))}
+                    </select>
+                    <label className="flow-switch inline">
+                      <span>Ativo</span>
+                      <input
+                        type="checkbox"
+                        checked={newFlow.enabled}
+                        onChange={(event) => setNewFlow((prev) => ({ ...prev, enabled: event.target.checked }))}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <textarea
+                      className="textarea"
+                      placeholder="Gatilhos JSON"
+                      value={newFlow.triggers}
+                      onChange={(event) => setNewFlow((prev) => ({ ...prev, triggers: event.target.value }))}
+                    />
+                    <textarea
+                      className="textarea"
+                      placeholder="Etapas JSON"
+                      value={newFlow.stages}
+                      onChange={(event) => setNewFlow((prev) => ({ ...prev, stages: event.target.value }))}
+                    />
+                  </div>
+                </div>
+              </details>
               <div className="form-row">
                 <button className="secondary" onClick={() => setFlowCreateOpen(false)}>
                   Cancelar

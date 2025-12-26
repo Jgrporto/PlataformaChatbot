@@ -30,6 +30,7 @@ function normalizeToken(token) {
 }
 
 function matchesTrigger(text, trigger, matchType) {
+  if (typeof trigger !== "string") return false;
   const value = (text || "").toLowerCase();
   const target = (trigger || "").toLowerCase();
   if (!target) return false;
