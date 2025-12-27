@@ -546,7 +546,10 @@ function renderFlows() {
 async function createFlow() {
   const name = el("new-flow-name").value.trim();
   if (!name) return;
-  await api("/api/chatbot/flows", { method: "POST", body: JSON.stringify({ name, triggers: [], stages: [] }) });
+  await api(
+    "/api/chatbot/flows",
+    { method: "POST", body: JSON.stringify({ name, triggers: [], stages: [], enabled: false }) }
+  );
   el("new-flow-name").value = "";
   await loadChatbot();
 }

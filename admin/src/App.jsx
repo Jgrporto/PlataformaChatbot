@@ -77,13 +77,48 @@ const MATCH_LABELS = {
 };
 
 const FLOW_ACTIONS = [
-  { type: "text", label: "Enviar Texto" },
-  { type: "image", label: "Enviar Imagem" },
-  { type: "video", label: "Enviar Video" },
-  { type: "audio", label: "Enviar Audio" },
-  { type: "document", label: "Enviar Documento" },
-  { type: "responses", label: "Respostas" },
-  { type: "list", label: "Enviar Lista" }
+  {
+    type: "text",
+    label: "Enviar Texto",
+    icon: "TXT",
+    hint: "Esse bloco envia um texto para o usuario interagir com o fluxo."
+  },
+  {
+    type: "image",
+    label: "Enviar Imagem",
+    icon: "IMG",
+    hint: "Esse bloco envia uma imagem para o usuario interagir com o fluxo."
+  },
+  {
+    type: "video",
+    label: "Enviar Video",
+    icon: "VID",
+    hint: "Esse bloco envia um video para o usuario interagir com o fluxo."
+  },
+  {
+    type: "audio",
+    label: "Enviar Audio",
+    icon: "AUD",
+    hint: "Esse bloco envia um audio para o usuario interagir com o fluxo."
+  },
+  {
+    type: "document",
+    label: "Enviar Documento",
+    icon: "DOC",
+    hint: "Esse bloco envia um documento para o usuario interagir com o fluxo."
+  },
+  {
+    type: "responses",
+    label: "Respostas",
+    icon: "RSP",
+    hint: "Esse bloco espera uma resposta para seguir o fluxo."
+  },
+  {
+    type: "list",
+    label: "Enviar Lista",
+    icon: "LST",
+    hint: "Esse bloco envia uma lista para o usuario interagir com o fluxo."
+  }
 ];
 
 const FLOW_ACTION_MAP = FLOW_ACTIONS.reduce((acc, item) => {
@@ -99,6 +134,21 @@ const FLOW_REACTIVATION_UNITS = [
   { value: "hours", label: "Horas" },
   { value: "days", label: "Dias" }
 ];
+
+const FLOW_FILE_MAX_BYTES = 16 * 1024 * 1024;
+const FLOW_FILE_MAX_MB = 16;
+const FLOW_FILE_ACCEPT = {
+  image: "image/jpeg,image/png,image/webp,image/gif",
+  video: "video/mp4,video/quicktime,video/3gpp,video/x-msvideo",
+  audio: "audio/*",
+  document: ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.json,.csv"
+};
+const FLOW_FILE_HINTS = {
+  image: "Tipos aceitos: JPEG, PNG, WEBP, GIF. Max 16MB.",
+  video: "Tipos aceitos: MP4, MOV, 3GP, AVI. Max 16MB.",
+  audio: "Tipos aceitos: audio. Max 16MB.",
+  document: "Tipos aceitos: PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, ZIP, JSON, CSV. Max 16MB."
+};
 
 const PRESET_VARIABLES = [
   {
@@ -354,15 +404,31 @@ function buildFlowItemId(prefix) {
   return `${prefix}-${seed}`;
 }
 
+function getFlowNodeSeed(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  let max = 0;
+  list.forEach((node) => {
+    const match = /^node-(\d+)$/.exec(node?.id || "");
+    if (match) {
+      const value = Number(match[1]);
+      if (value > max) max = value;
+    }
+  });
+  return max + 1;
+}
+
 function buildDefaultNodeConfig(kind) {
   if (kind === "text") {
-    return { message: "", saveVar: "", tags: [] };
+    return { message: "", saveVar: "", tags: [], timeoutMinutes: 0 };
   }
-  if (kind === "image" || kind === "video" || kind === "document") {
-    return { fileName: "", caption: "", saveVar: "" };
+  if (kind === "image" || kind === "video") {
+    return { fileName: "", caption: "", saveVar: "", timeoutMinutes: 0 };
+  }
+  if (kind === "document") {
+    return { fileName: "", saveVar: "", timeoutMinutes: 0 };
   }
   if (kind === "audio") {
-    return { fileName: "", caption: "", saveVar: "", recording: false };
+    return { fileName: "", caption: "", saveVar: "", recording: false, timeoutMinutes: 0 };
   }
   if (kind === "responses") {
     return {
@@ -370,7 +436,8 @@ function buildDefaultNodeConfig(kind) {
       options: [{ id: buildFlowItemId("option"), label: "" }],
       matchType: "includes",
       saveVar: "",
-      fallbackRepeat: false
+      fallbackRepeat: false,
+      timeoutMinutes: 0
     };
   }
   if (kind === "list") {
@@ -381,7 +448,8 @@ function buildDefaultNodeConfig(kind) {
       buttonText: "",
       categories: [{ id: buildFlowItemId("category"), title: "", items: [] }],
       saveVar: "",
-      fallbackRepeat: false
+      fallbackRepeat: false,
+      timeoutMinutes: 0
     };
   }
   return { message: "" };
@@ -426,16 +494,28 @@ function normalizeStageConfig(kind, stage) {
   if (kind === "list") {
     config.categories = normalizeCategories(raw.categories, base.categories);
   }
+  const timeout = Number(config.timeoutMinutes);
+  config.timeoutMinutes = Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
   return config;
 }
 
 function getNodeOutputs(kind, config) {
+  const timeoutMinutes = Number(config?.timeoutMinutes || 0);
   if (kind === "responses") {
     const options = Array.isArray(config?.options) ? config.options : [];
-    return options.map((option, index) => ({
+    const outputs = options.map((option, index) => ({
       id: `option-${option.id || index}`,
-      label: option.label || `Opcao ${index + 1}`
+      label: option.label || `Opcao ${index + 1}`,
+      type: "option"
     }));
+    if (timeoutMinutes > 0) {
+      outputs.push({
+        id: "timeout",
+        label: `${timeoutMinutes} minutos sem responder`,
+        type: "timeout"
+      });
+    }
+    return outputs;
   }
   if (kind === "list") {
     const categories = Array.isArray(config?.categories) ? config.categories : [];
@@ -448,22 +528,42 @@ function getNodeOutputs(kind, config) {
           const itemLabel = item.title || `Item ${iIndex + 1}`;
           outputs.push({
             id: `item-${item.id || `${cIndex}-${iIndex}`}`,
-            label: `${catLabel}: ${itemLabel}`
+            label: `${catLabel}: ${itemLabel}`,
+            type: "option"
           });
         });
       } else {
         outputs.push({
           id: `category-${category.id || cIndex}`,
-          label: catLabel
+          label: catLabel,
+          type: "option"
         });
       }
     });
-    return outputs.length ? outputs : [{ id: "next", label: "Chamar proximo" }];
+    if (outputs.length === 0) {
+      outputs.push({ id: "next", label: "Chamar proximo bloco", type: "next" });
+    }
+    if (timeoutMinutes > 0) {
+      outputs.push({
+        id: "timeout",
+        label: `${timeoutMinutes} minutos sem responder`,
+        type: "timeout"
+      });
+    }
+    return outputs;
   }
-  return [
-    { id: "next", label: "Chamar proximo" },
-    { id: "reply", label: "Quando responder" }
+  const outputs = [
+    { id: "next", label: "Chamar proximo bloco", type: "next" },
+    { id: "reply", label: "Quando responder", type: "reply" }
   ];
+  if (timeoutMinutes > 0) {
+    outputs.push({
+      id: "timeout",
+      label: `${timeoutMinutes} minutos sem responder`,
+      type: "timeout"
+    });
+  }
+  return outputs;
 }
 
 function buildFlowGraphFromStages(stages) {
@@ -540,6 +640,8 @@ function sanitizeNodeConfig(kind, config) {
   if (kind === "list") {
     raw.categories = normalizeCategories(raw.categories, []);
   }
+  const timeout = Number(raw.timeoutMinutes);
+  raw.timeoutMinutes = Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
   return raw;
 }
 
@@ -1339,7 +1441,7 @@ function App() {
       : [];
     setFlowNodes([startNode, ...graph.nodes]);
     setFlowEdges([...startEdge, ...graph.edges]);
-    flowNodeIdRef.current = graph.nodes.length + 1;
+    flowNodeIdRef.current = getFlowNodeSeed(graph.nodes);
     setFlowGraphDirty(false);
     setFlowError("");
   }, [selectedFlow]);
@@ -1672,8 +1774,12 @@ function App() {
   };
 
   const getNextFlowNodeId = useCallback(() => {
-    const next = flowNodeIdRef.current;
-    flowNodeIdRef.current += 1;
+    const existingIds = new Set((flowNodesRef.current || []).map((node) => node.id));
+    let next = flowNodeIdRef.current || 1;
+    while (existingIds.has(`node-${next}`)) {
+      next += 1;
+    }
+    flowNodeIdRef.current = next + 1;
     return `node-${next}`;
   }, []);
 
@@ -1716,7 +1822,8 @@ function App() {
   );
 
   const handleFlowConnect = useCallback((params) => {
-    if (!params.source) return;
+    if (!params.source || !params.target) return;
+    if (params.source === params.target) return;
     setFlowEdges((eds) => {
       const filtered = eds.filter(
         (edge) => !(edge.source === params.source && edge.sourceHandle === params.sourceHandle)
@@ -1747,7 +1854,11 @@ function App() {
         y: event.clientY - bounds.top
       });
       const node = createFlowNode(kind, position);
-      setFlowNodes((nds) => nds.concat(node));
+      setFlowNodes((nds) => {
+        const next = nds.concat(node);
+        flowNodesRef.current = next;
+        return next;
+      });
       setFlowGraphDirty(true);
     },
     [flowInstance, createFlowNode, setFlowNodes]
@@ -1790,6 +1901,11 @@ function App() {
   const handleFlowFileChange = (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
+    if (file.size > FLOW_FILE_MAX_BYTES) {
+      alert(`Arquivo acima de ${FLOW_FILE_MAX_MB}MB.`);
+      event.target.value = "";
+      return;
+    }
     updateFlowNodeDraft({
       fileName: file.name,
       fileType: file.type,
@@ -1924,7 +2040,11 @@ function App() {
 
   const deleteFlowNode = useCallback((nodeId) => {
     if (!nodeId || nodeId === FLOW_START_NODE_ID) return;
-    setFlowNodes((nodes) => nodes.filter((node) => node.id !== nodeId));
+    setFlowNodes((nodes) => {
+      const next = nodes.filter((node) => node.id !== nodeId);
+      flowNodesRef.current = next;
+      return next;
+    });
     setFlowEdges((edges) => edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
     setFlowGraphDirty(true);
   }, []);
@@ -1953,7 +2073,7 @@ function App() {
       : [];
     setFlowNodes([startNode, ...graph.nodes]);
     setFlowEdges([...startEdge, ...graph.edges]);
-    flowNodeIdRef.current = graph.nodes.length + 1;
+    flowNodeIdRef.current = getFlowNodeSeed(graph.nodes);
     setFlowGraphDirty(true);
   };
 
@@ -1968,6 +2088,18 @@ function App() {
 
   const closeFlowEditor = () => {
     setFlowEditorOpen(false);
+  };
+
+  const openFlowCreateModal = () => {
+    setNewFlow({
+      name: "",
+      triggers: "[]",
+      stages: "[]",
+      flowType: "custom",
+      enabled: false,
+      deviceId: chatbotDeviceId || ""
+    });
+    setFlowCreateOpen(true);
   };
 
   const submitFlowCreate = async () => {
@@ -2328,7 +2460,7 @@ function App() {
           triggers,
           stages,
           flowType: newFlow.flowType,
-          enabled: newFlow.enabled,
+          enabled: false,
           deviceId: newFlow.deviceId || null
         })
       });
@@ -2617,8 +2749,11 @@ function App() {
   const FlowStartNode = ({ data }) => {
     return (
       <div className="flow-node flow-node-start">
-        <div className="flow-node-title">{data?.label || "Inicio"}</div>
-        <div className="flow-node-meta">Entrada principal</div>
+        <div className="flow-node-title">
+          <span className="flow-node-icon flow-node-icon-start">IN</span>
+          <span>{data?.label || "Inicio"}</span>
+        </div>
+        <div className="flow-node-desc">Entrada principal</div>
         <Handle type="source" position={Position.Right} id="next" className="flow-handle" />
       </div>
     );
@@ -2630,13 +2765,17 @@ function App() {
     const outputs = getNodeOutputs(kind, config);
     const preview = getFlowNodePreview(kind, config);
     const saveVar = config.saveVar || "";
-    const outputTop = 44;
-    const outputGap = 18;
+    const actionMeta = FLOW_ACTION_MAP[kind] || {};
 
     return (
-      <div className="flow-node flow-node-action">
+      <div className={`flow-node flow-node-action flow-node-${kind}`}>
         <div className="flow-node-head">
-          <div className="flow-node-title">{data?.label || "Bloco"}</div>
+          <div className="flow-node-title">
+            <span className={`flow-node-icon flow-node-icon-${kind}`}>
+              {actionMeta.icon || "BLK"}
+            </span>
+            <span>{data?.label || "Bloco"}</span>
+          </div>
           <div className="flow-node-actions">
             <button className="flow-node-btn" onClick={() => openFlowNodeModal(id)}>
               Editar
@@ -2646,32 +2785,32 @@ function App() {
             </button>
           </div>
         </div>
-        <div className="flow-node-preview">{preview}</div>
-        {saveVar ? <div className="flow-node-meta">Salvar em: {saveVar}</div> : null}
-        {kind === "responses" ? (
-          <div className="flow-node-meta">{config.options?.length || 0} opcoes</div>
-        ) : null}
-        {kind === "list" ? (
-          <div className="flow-node-meta">{config.categories?.length || 0} categorias</div>
-        ) : null}
+        {actionMeta.hint ? <div className="flow-node-desc">{actionMeta.hint}</div> : null}
+        <div className="flow-node-body">
+          <div className="flow-node-preview">{preview}</div>
+          {saveVar ? <div className="flow-node-meta">Salvar em: {saveVar}</div> : null}
+          {kind === "responses" ? (
+            <div className="flow-node-meta">{config.options?.length || 0} opcoes</div>
+          ) : null}
+          {kind === "list" ? (
+            <div className="flow-node-meta">{config.categories?.length || 0} categorias</div>
+          ) : null}
+        </div>
         <Handle type="target" position={Position.Left} id="in" className="flow-handle" />
-        {outputs.map((output, index) => {
-          const top = outputTop + index * outputGap;
-          return (
-            <React.Fragment key={output.id}>
+        <div className="flow-node-output-list">
+          {outputs.map((output) => (
+            <div key={output.id} className={`flow-node-output flow-node-output-${output.type || "default"}`}>
+              <span className="flow-node-output-label">{output.label}</span>
               <Handle
                 type="source"
                 position={Position.Right}
                 id={output.id}
-                className="flow-handle"
-                style={{ top }}
+                className="flow-handle flow-handle-output"
+                style={{ top: "50%" }}
               />
-              <span className="flow-handle-label" style={{ top: top - 6 }}>
-                {output.label}
-              </span>
-            </React.Fragment>
-          );
-        })}
+            </div>
+          ))}
+        </div>
       </div>
     );
   };
@@ -3384,7 +3523,7 @@ function App() {
               </div>
             </div>
             <div className="flow-list-grid">
-              <button className="flow-card flow-create-card" onClick={() => setFlowCreateOpen(true)} type="button">
+              <button className="flow-card flow-create-card" onClick={openFlowCreateModal} type="button">
                 <div className="flow-create-icon">+</div>
                 <div className="flow-create-text">Criar novo fluxo</div>
               </button>
@@ -3417,7 +3556,7 @@ function App() {
                                 {flow.enabled ? "Ativo" : "Inativo"}
                               </span>
                               <span className="device-meta">
-                                {keywords.length} gatilhos • {(flow.stages || []).length} blocos
+                                {keywords.length} gatilhos | {(flow.stages || []).length} blocos
                               </span>
                             </div>
                           </div>
@@ -3432,7 +3571,9 @@ function App() {
                             <span className="flow-card-slider" />
                           </label>
                           <details className="flow-card-menu">
-                            <summary className="icon">...</summary>
+                            <summary className="icon" aria-label="Opcoes">
+                              &#8942;
+                            </summary>
                             <div className="flow-card-menu-list">
                               <button type="button" onClick={() => openFlowRenameModal(flow)}>
                                 Renomear
@@ -3928,11 +4069,14 @@ function App() {
                   Voltar
                 </button>
                 <div className="flow-editor-title">
-                  <input
-                    className="flow-title-input"
-                    value={flowDraft.name}
-                    onChange={(event) => setFlowDraft((prev) => ({ ...prev, name: event.target.value }))}
-                  />
+                  <div className="flow-editor-title-row">
+                    <input
+                      className="flow-title-input"
+                      value={flowDraft.name}
+                      onChange={(event) => setFlowDraft((prev) => ({ ...prev, name: event.target.value }))}
+                    />
+                    <span className="badge flow-beta">Versao Beta</span>
+                  </div>
                   <div className="device-meta">
                     {flowDraft.deviceId
                       ? `Device: ${deviceLabelMap.get(flowDraft.deviceId) || flowDraft.deviceId}`
@@ -4089,7 +4233,8 @@ function App() {
                           draggable
                           onDragStart={(event) => handleFlowDragStart(event, action.type)}
                         >
-                          {action.label}
+                          <div className="flow-action-icon">{action.icon || "BLK"}</div>
+                          <div className="flow-action-label">{action.label}</div>
                         </div>
                       ))}
                     </div>
@@ -4242,6 +4387,7 @@ function App() {
                   onDragOver={handleFlowDragOver}
                   fitView
                   panOnScroll
+                  deleteKeyCode={null}
                 >
                   <Background variant="dots" gap={24} size={1} color="rgba(148, 163, 184, 0.2)" />
                   <Controls />
@@ -4298,20 +4444,17 @@ function App() {
                 </>
               ) : null}
 
-              {["image", "video", "document"].includes(flowNodeModal.kind) ? (
+              {["image", "video"].includes(flowNodeModal.kind) ? (
                 <>
                   <input
                     className="input"
                     type="file"
-                    accept={
-                      flowNodeModal.kind === "image"
-                        ? "image/*"
-                        : flowNodeModal.kind === "video"
-                        ? "video/*"
-                        : "*"
-                    }
+                    accept={FLOW_FILE_ACCEPT[flowNodeModal.kind] || "*"}
                     onChange={handleFlowFileChange}
                   />
+                  {FLOW_FILE_HINTS[flowNodeModal.kind] ? (
+                    <div className="device-meta">{FLOW_FILE_HINTS[flowNodeModal.kind]}</div>
+                  ) : null}
                   {flowNodeDraft.fileName ? <div className="device-meta">{flowNodeDraft.fileName}</div> : null}
                   <input
                     className="input"
@@ -4328,9 +4471,34 @@ function App() {
                 </>
               ) : null}
 
+              {flowNodeModal.kind === "document" ? (
+                <>
+                  <input
+                    className="input"
+                    type="file"
+                    accept={FLOW_FILE_ACCEPT.document}
+                    onChange={handleFlowFileChange}
+                  />
+                  <div className="device-meta">{FLOW_FILE_HINTS.document}</div>
+                  {flowNodeDraft.fileName ? <div className="device-meta">{flowNodeDraft.fileName}</div> : null}
+                  <input
+                    className="input"
+                    placeholder="Salvar resposta em variavel"
+                    value={flowNodeDraft.saveVar || ""}
+                    onChange={(event) => updateFlowNodeDraft({ saveVar: event.target.value })}
+                  />
+                </>
+              ) : null}
+
               {flowNodeModal.kind === "audio" ? (
                 <>
-                  <input className="input" type="file" accept="audio/*" onChange={handleFlowFileChange} />
+                  <input
+                    className="input"
+                    type="file"
+                    accept={FLOW_FILE_ACCEPT.audio}
+                    onChange={handleFlowFileChange}
+                  />
+                  <div className="device-meta">{FLOW_FILE_HINTS.audio}</div>
                   {flowNodeDraft.fileName ? <div className="device-meta">{flowNodeDraft.fileName}</div> : null}
                   <div className="form-row">
                     <button
@@ -4529,6 +4697,20 @@ function App() {
                   </label>
                 </>
               ) : null}
+
+              <div className="flow-timeout">
+                <div className="flow-timeout-label">Minutos sem responder</div>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  value={flowNodeDraft.timeoutMinutes || 0}
+                  onChange={(event) =>
+                    updateFlowNodeDraft({ timeoutMinutes: Number(event.target.value) || 0 })
+                  }
+                />
+                <div className="device-meta">0 = sem fallback de tempo.</div>
+              </div>
 
               <div className="form-row">
                 <button className="secondary" type="button" onClick={closeFlowNodeModal}>
@@ -4848,7 +5030,7 @@ Senha: {#senha}`}</pre>
                 X
               </button>
             </div>
-            <div className="modal-body">
+            <div className="modal-body flow-create-body">
               <input
                 className="input"
                 placeholder="Nome do fluxo"
@@ -4856,47 +5038,6 @@ Senha: {#senha}`}</pre>
                 onChange={(event) => setNewFlow((prev) => ({ ...prev, name: event.target.value }))}
               />
               <div className="device-meta">O fluxo sera criado inativo por padrao.</div>
-              <details className="flow-advanced">
-                <summary>Avancado</summary>
-                <div className="flow-advanced-body">
-                  <div className="form-row">
-                    <select
-                      className="select"
-                      value={newFlow.deviceId}
-                      onChange={(event) => setNewFlow((prev) => ({ ...prev, deviceId: event.target.value }))}
-                    >
-                      <option value="">Todos os Dispositivos</option>
-                      {deviceOptions.map((device) => (
-                        <option key={device.value} value={device.value}>
-                          {device.label}
-                        </option>
-                      ))}
-                    </select>
-                    <label className="flow-switch inline">
-                      <span>Ativo</span>
-                      <input
-                        type="checkbox"
-                        checked={newFlow.enabled}
-                        onChange={(event) => setNewFlow((prev) => ({ ...prev, enabled: event.target.checked }))}
-                      />
-                    </label>
-                  </div>
-                  <div className="form-row">
-                    <textarea
-                      className="textarea"
-                      placeholder="Gatilhos JSON"
-                      value={newFlow.triggers}
-                      onChange={(event) => setNewFlow((prev) => ({ ...prev, triggers: event.target.value }))}
-                    />
-                    <textarea
-                      className="textarea"
-                      placeholder="Etapas JSON"
-                      value={newFlow.stages}
-                      onChange={(event) => setNewFlow((prev) => ({ ...prev, stages: event.target.value }))}
-                    />
-                  </div>
-                </div>
-              </details>
               <div className="form-row">
                 <button className="secondary" onClick={() => setFlowCreateOpen(false)}>
                   Cancelar
